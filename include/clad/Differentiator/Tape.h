@@ -146,6 +146,9 @@ public:
   /// Add new value of type T constructed from args to the end of the tape.
   template <typename... ArgsT>
   CUDA_HOST_DEVICE void emplace_back(ArgsT&&... args) {
+#ifndef __CUDACC__ // Only print on CPU host code to avoid CUDA errors
+    std::printf("DEBUG: clad::tape push (Size: %lu)\n", m_size);
+#endif
     if (m_size < SBO_SIZE) {
       // Store in SBO buffer
       ::new (const_cast<void*>(static_cast<const volatile void*>(
