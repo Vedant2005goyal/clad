@@ -1,7 +1,7 @@
 #include "benchmark/benchmark.h"
 
 #include "clad/Differentiator/Differentiator.h"
-
+#include <cstddef>
 namespace {
   struct MemoryManager : public benchmark::MemoryManager {
     size_t cur_num_allocs = 0;
@@ -60,21 +60,26 @@ void operator delete(void* p) noexcept {
   free(p);
 }
 
-template <typename T, std::size_t SBO_SIZE = 64, std::size_t SLAB_SIZE = 1024>
-void func(clad::tape<T, SBO_SIZE, SLAB_SIZE>& t, T x, int n) {
+template <typename T, std::size_t SBO_SIZE = 64, std::size_t SLAB_SIZE = 1024,
+          bool DiskOffload = false>
+void func(clad::tape_impl<T, SBO_SIZE, SLAB_SIZE, false, DiskOffload>& t, T x,
+          int n) {
   for (int i = 0; i < n; i++)
-    clad::push<T, SBO_SIZE, SLAB_SIZE>(t, x);
+    t.emplace_back(x);
 
-  for (int i = 0; i < n; i++)
-    benchmark::DoNotOptimize(clad::pop<T, SBO_SIZE, SLAB_SIZE>(t));
+  for (int i = 0; i < n; i++) {
+    benchmark::DoNotOptimize(t.back());
+    t.pop_back();
+  }
 }
 
 static void BM_TapeMemory(benchmark::State& state) {
   int block = state.range(0);
   AddBMCounterRAII MemCounters(*mm.get(), state);
   for (auto _ : state) {
-    clad::tape<double> t;
-    func<double>(t, 1, block * 2 + 1);
+    // Explicitly using false for DiskOffload to test baseline
+    clad::tape_impl<double, 64, 1024, false, false> t;
+    func<double, 64, 1024, false>(t, 1, block * 2 + 1);
   }
 }
 BENCHMARK(BM_TapeMemory)->RangeMultiplier(2)->Range(0, 4096);
@@ -84,8 +89,8 @@ static void BM_TapeMemory_Templated(benchmark::State& state) {
   int block = state.range(0);
   AddBMCounterRAII MemCounters(*mm.get(), state);
   for (auto _ : state) {
-    clad::tape<double, SBO_SIZE, SLAB_SIZE> t;
-    func<double, SBO_SIZE, SLAB_SIZE>(t, 1, block * 2 + 1);
+    clad::tape_impl<double, SBO_SIZE, SLAB_SIZE, false, false> t;
+    func<double, SBO_SIZE, SLAB_SIZE, false>(t, 1, block * 2 + 1);
   }
 }
 
@@ -97,6 +102,23 @@ static void BM_TapeMemory_Templated(benchmark::State& state) {
 
 REGISTER_TAPE_BENCHMARK(64, 1024);
 REGISTER_TAPE_BENCHMARK(32, 512);
+
+// This explicitly tests the case where DiskOffload = true
+template <std::size_t SBO_SIZE, std::size_t SLAB_SIZE>
+static void BM_Multilayer_Storage(benchmark::State& state) {
+  int64_t block = state.range(0);
+  AddBMCounterRAII MemCounters(*mm, state);
+  for (auto _ : state) {
+    // Set DiskOffload = true here
+    clad::tape_impl<double, SBO_SIZE, SLAB_SIZE, false, true> t;
+    func<double, SBO_SIZE, SLAB_SIZE, true>(t, 1, block * 2 + 1);
+  }
+}
+
+BENCHMARK_TEMPLATE(BM_Multilayer_Storage, 64, 1024)
+    ->RangeMultiplier(2)
+    ->Range(0, 4096)
+    ->Name("BM_Multilayer_Storage/SBO_64_SLAB_1024_DISK");
 
 #include "BenchmarkedFunctions.h"
 
