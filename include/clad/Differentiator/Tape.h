@@ -163,9 +163,9 @@ private:
 #endif
   };
 
-  std::unique_ptr<DiskManager> m_DiskManager;
-  std::size_t m_ActiveSlabs = 0;
-  std::size_t m_MaxRamSlabs = 1000;
+  mutable std::unique_ptr<DiskManager> m_DiskManager;
+  mutable std::size_t m_ActiveSlabs = 0;
+  static constexpr std::size_t m_MaxRamSlabs = 1000;
 
 #ifndef __CUDACC__
   mutable std::mutex m_TapeMutex;
@@ -221,6 +221,7 @@ private:
         }
       }
       slab->allocate();
+      if (!m_DiskManager) m_DiskManager.reset(new DiskManager());
       m_DiskManager->read_slab(slab->elements(), slab->disk_offset);
       slab->is_on_disk = false;
       m_ActiveSlabs++;
@@ -304,7 +305,7 @@ public:
 
   CUDA_HOST_DEVICE const_reference back() const {
     assert(m_size);
-    return const_cast<tape_impl*>(this)->operator[](m_size - 1);
+    return *at(m_size - 1);
   }
 
   CUDA_HOST_DEVICE reference operator[](std::size_t i) {
@@ -314,7 +315,7 @@ public:
 
   CUDA_HOST_DEVICE const_reference operator[](std::size_t i) const {
     assert(i < m_size);
-    return *const_cast<tape_impl*>(this)->at(i);
+    return *at(i);
   }
 
   CUDA_HOST_DEVICE void pop_back() {
@@ -337,6 +338,20 @@ public:
 private:
   /// Returns pointer to element at specified index, handling SBO or slab lookup
   CUDA_HOST_DEVICE T* at(std::size_t index) {
+    if (index < SBO_SIZE)
+      return sbo_elements() + index;
+
+    Slab* slab = m_head;
+    std::size_t idx = (index - SBO_SIZE) / SLAB_SIZE;
+    while (idx--)
+      slab = slab->next;
+
+    ensure_loaded(slab, std::integral_constant<bool, DiskOffload>{});
+
+    return slab->elements() + ((index - SBO_SIZE) % SLAB_SIZE);
+  }
+
+  CUDA_HOST_DEVICE const T* at(std::size_t index) const {
     if (index < SBO_SIZE)
       return sbo_elements() + index;
 
