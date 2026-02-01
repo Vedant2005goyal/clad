@@ -7,6 +7,33 @@ CB_ADD_GBENCHMARK(ArrayExpressionTemplates ArrayExpressionTemplates.cpp)
 if (CLAD_ENABLE_ENZYME_BACKEND)
   CB_ADD_GBENCHMARK(EnzymeCladComparison EnzymeCladComparison.cpp)
 endif(CLAD_ENABLE_ENZYME_BACKEND)
+
+option(CLAD_ENABLE_TAPENADE_BENCHMARK "Enable Tapenade comparison benchmarks" OFF)
+
+if (CLAD_ENABLE_TAPENADE_BENCHMARK)
+  include(FetchContent)
+  FetchContent_Declare(
+    tapenade_kit
+    GIT_REPOSITORY https://gitlab.inria.fr/tapenade/tapenade.git
+    GIT_TAG        develop
+    GIT_SHALLOW    TRUE
+    GIT_PROGRESS   TRUE      
+    GIT_SUBMODULES ""
+  )
+  FetchContent_MakeAvailable(tapenade_kit)
+
+  add_library(tapenade_support STATIC ${tapenade_kit_SOURCE_DIR}/ADFirstAidKit/adStack.c)
+  target_include_directories(tapenade_support PUBLIC ${tapenade_kit_SOURCE_DIR}/ADFirstAidKit)
+
+  target_compile_definitions(tapenade_support PRIVATE 
+      ADSTACK_MAX_SPACES=1        
+      ADSTACK_BLOCK_SIZE=4096    
+  )
+  CB_ADD_GBENCHMARK(TapenadeVsClad TapenadeVsClad.cpp)
+  
+  target_link_libraries(TapenadeVsClad PRIVATE tapenade_support)
+endif()
+
 CB_ADD_GBENCHMARK(VectorModeComparison VectorModeComparison.cpp)
 CB_ADD_GBENCHMARK(MemoryComplexity MemoryComplexity.cpp)
 CB_ADD_GBENCHMARK(Multithreading Multithreading.cpp)
