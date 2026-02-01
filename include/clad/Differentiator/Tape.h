@@ -221,7 +221,8 @@ private:
         }
       }
       slab->allocate();
-      if (!m_DiskManager) m_DiskManager.reset(new DiskManager());
+      if (!m_DiskManager)
+        m_DiskManager.reset(new DiskManager());
       m_DiskManager->read_slab(slab->elements(), slab->disk_offset);
       slab->is_on_disk = false;
       m_ActiveSlabs++;
