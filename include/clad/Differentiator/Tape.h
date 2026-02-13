@@ -75,7 +75,8 @@
 //           bool is_multithread, bool DiskOffload>
 // class tape_impl;
 
-// template <typename T, std::size_t SBO_SIZE = 64, std::size_t SLAB_SIZE = 1024,
+// template <typename T, std::size_t SBO_SIZE = 64, std::size_t SLAB_SIZE =
+// 1024,
 //           bool is_multithread = false, bool DiskOffload = false>
 // class tape_iterator {
 //   using tape_t =
@@ -117,7 +118,8 @@
 //   }
 // };
 
-// template <typename T, std::size_t SBO_SIZE = 64, std::size_t SLAB_SIZE = 1024,
+// template <typename T, std::size_t SBO_SIZE = 64, std::size_t SLAB_SIZE =
+// 1024,
 //           bool is_multithread = false, bool DiskOffload = false>
 // class tape_impl {
 //   struct RAMStorage {
@@ -198,7 +200,8 @@
 // #endif
 //   }
 
-//   inline __attribute__((always_inline)) void check_and_evict(std::true_type) {
+//   inline __attribute__((always_inline)) void check_and_evict(std::true_type)
+//   {
 //     if (m_Offload.m_ActiveSlabs >= m_Offload.m_MaxRamSlabs) {
 //       Slab* candidate = m_head;
 //       while (candidate && (candidate->is_on_disk || candidate == m_tail))
@@ -215,7 +218,8 @@
 //       }
 //     }
 //   }
-//   inline __attribute__((always_inline)) void check_and_evict(std::false_type) {}
+//   inline __attribute__((always_inline)) void check_and_evict(std::false_type)
+//   {}
 
 //   inline __attribute__((always_inline)) void ensure_loaded(Slab* slab,
 //                                                            std::true_type) {
@@ -224,7 +228,8 @@
 //         Slab* v = m_head;
 //         while (v) {
 //           if (!v->is_on_disk && v != slab) {
-//             v->disk_offset = m_Offload.m_DiskManager->write_slab(v->elements());
+//             v->disk_offset =
+//             m_Offload.m_DiskManager->write_slab(v->elements());
 //             v->deallocate();
 //             v->is_on_disk = true;
 //             m_Offload.m_ActiveSlabs--;
@@ -234,18 +239,20 @@
 //         }
 //       }
 //       slab->allocate();
-//       m_Offload.m_DiskManager->read_slab(slab->elements(), slab->disk_offset);
-//       slab->is_on_disk = false;
+//       m_Offload.m_DiskManager->read_slab(slab->elements(),
+//       slab->disk_offset); slab->is_on_disk = false;
 //       m_Offload.m_ActiveSlabs++;
 //     }
 //   }
 //   inline __attribute__((always_inline)) void ensure_loaded(Slab* slab,
-//                                                            std::false_type) {}
+//                                                            std::false_type)
+//                                                            {}
 
 //   inline __attribute__((always_inline)) void track_new_slab(std::true_type) {
 //     m_Offload.m_ActiveSlabs++;
 //   }
-//   inline __attribute__((always_inline)) void track_new_slab(std::false_type) {}
+//   inline __attribute__((always_inline)) void track_new_slab(std::false_type)
+//   {}
 
 // public:
 //   using reference = T&;
@@ -258,7 +265,8 @@
 //   using iterator =
 //       tape_iterator<T, SBO_SIZE, SLAB_SIZE, is_multithread, DiskOffload>;
 //   using const_iterator =
-//       tape_iterator<const T, SBO_SIZE, SLAB_SIZE, is_multithread, DiskOffload>;
+//       tape_iterator<const T, SBO_SIZE, SLAB_SIZE, is_multithread,
+//       DiskOffload>;
 
 // #ifndef __CUDACC__
 //   std::mutex& mutex() const { return m_TapeMutex; }
@@ -358,8 +366,8 @@
 //   }
 
 // public:
-//   /// Returns pointer to element at specified index, handling SBO or slab lookup
-//   CUDA_HOST_DEVICE T* at(std::size_t index) {
+//   /// Returns pointer to element at specified index, handling SBO or slab
+//   lookup CUDA_HOST_DEVICE T* at(std::size_t index) {
 //     if (index < SBO_SIZE)
 //       return sbo_elements() + index;
 
@@ -384,7 +392,8 @@
 //       I->~value_type_of<It>();
 //   }
 
-//   // If type is trivially destructible, its destructor is no-op, so we can avoid
+//   // If type is trivially destructible, its destructor is no-op, so we can
+//   avoid
 //   // for loop here.
 //   template <typename It>
 //   static typename std::enable_if<
@@ -422,8 +431,8 @@
 //       m_Offload.m_ActiveSlabs = 0;
 //   }
 
-//   template <typename ElTy> void destroy_element(ElTy* elem) { elem->~ElTy(); }
-//   template <typename ElTy, size_t N> void destroy_element(ElTy (*arr)[N]) {
+//   template <typename ElTy> void destroy_element(ElTy* elem) { elem->~ElTy();
+//   } template <typename ElTy, size_t N> void destroy_element(ElTy (*arr)[N]) {
 //     for (size_t i = 0; i < N; ++i)
 //       (*arr)[i].~ElTy();
 //   }
@@ -745,7 +754,7 @@ class tape_impl<T, SBO_SIZE, SLAB_SIZE, is_multithread, true> {
 
     CUDA_HOST_DEVICE Slab() : prev(nullptr), next(nullptr) { allocate(); }
     CUDA_HOST_DEVICE ~Slab() { deallocate(); }
-    
+
     // Rule of 5: Delete copy/move to prevent double-free issues
     Slab(const Slab&) = delete;
     Slab& operator=(const Slab&) = delete;
@@ -884,7 +893,8 @@ public:
     m_size++;
   }
 
-  // ... (Rest of functions are mostly same, just calling ensure_loaded/check_and_evict)
+  // ... (Rest of functions are mostly same, just calling
+  // ensure_loaded/check_and_evict)
   CUDA_HOST_DEVICE std::size_t size() const { return m_size; }
   CUDA_HOST_DEVICE iterator begin() { return iterator(this, 0); }
   CUDA_HOST_DEVICE const_iterator begin() const {
