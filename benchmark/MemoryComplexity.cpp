@@ -4,6 +4,10 @@
 #include "clad/Differentiator/Tape.h"
 #include <cstddef>
 #include <cstdint>
+extern "C" {
+void pushReal8(double x);
+void popReal8(double* x);
+}
 namespace {
   struct MemoryManager : public benchmark::MemoryManager {
     size_t cur_num_allocs = 0;
@@ -132,7 +136,7 @@ BENCHMARK_TEMPLATE(BM_Multilayer_Storage, 64, 1024)
     ->Name("BM_Multilayer_Storage/SBO_64_SLAB_1024_DISK");
 
 #include "BenchmarkedFunctions.h"
-static void BM_ReverseGausMemoryP(benchmark::State& state) {
+static void BM_ReverseGausMemoryPss(benchmark::State& state) {
   auto dfdp_grad = clad::gradient(gaus, "p");
   unsigned dim = state.range(0);
   double* x = new double[dim]();
@@ -148,41 +152,84 @@ static void BM_ReverseGausMemoryP(benchmark::State& state) {
     dfdp_grad.execute(x, p, /*sigma*/ 2, dim, result);
   }
 }
-BENCHMARK(BM_ReverseGausMemoryP)->RangeMultiplier(2)->Range(0, 4096);
+BENCHMARK(BM_ReverseGausMemoryPss)->RangeMultiplier(2)->Range(0, 4096);
 
 const size_t TARGET_ELEMENTS = 20000;
 
-static void BM_CrashTest_OS_Paging(benchmark::State& state) {
-  AddBMCounterRAII MemCounters(*mm, state);
-  for (auto _ : state) {
-    clad::tape_impl<double, 64, 1024, /*is_Multithread=*/false,
-                    /*DiskOffload=*/false>
-        t;
+// static void BM_CrashTest_OS_Paging(benchmark::State& state) {
+//   AddBMCounterRAII MemCounters(*mm, state);
+//   for (auto _ : state) {
+//     clad::tape_impl<double, 64, 1024, /*is_Multithread=*/false,
+//                     /*DiskOffload=*/false>
+//         t;
 
-    for (size_t i = 0; i < TARGET_ELEMENTS; ++i) {
-      try {
-        clad::push(t, 1.0);
-      } catch (std::bad_alloc& e) {
-        state.SkipWithError("OS ran out of memory!");
-        break;
-      }
+//     for (size_t i = 0; i < TARGET_ELEMENTS; ++i) {
+//       try {
+//         clad::push(t, 1.0);
+//       } catch (std::bad_alloc& e) {
+//         state.SkipWithError("OS ran out of memory!");
+//         break;
+//       }
+//     }
+//   }
+// }
+
+// BENCHMARK(BM_CrashTest_OS_Paging)->Iterations(1);
+
+// static void BM_CrashTest_Clad_Offload(benchmark::State& state) {
+//   AddBMCounterRAII MemCounters(*mm, state);
+//   for (auto _ : state) {
+//     clad::tape_impl<double, 64, 1310720, /*is_Multithread=*/false,
+//                     /*DiskOffload=*/true>
+//         t;
+
+//     for (size_t i = 0; i < TARGET_ELEMENTS; ++i)
+//       clad::push(t, 1.0);
+//   }
+// }
+// BENCHMARK(BM_CrashTest_Clad_Offload)->Iterations(1);
+
+// Tapenade Comparison Benchmarks
+static void BM_Tapenade_PushPop(benchmark::State& state) {
+  int64_t n = state.range(0);
+  for (auto _ : state) {
+    // Push Loop
+    for (int64_t i = 0; i < n; ++i) {
+      double val = 1.0;
+      pushReal8(val);
+    }
+    // Pop Loop
+    for (int64_t i = 0; i < n; ++i) {
+      double val = 0.0;
+      popReal8(&val);
+      benchmark::DoNotOptimize(val);
     }
   }
 }
+BENCHMARK(BM_Tapenade_PushPop)
+    ->RangeMultiplier(4)
+    ->Range(1024, 262144)
+    ->Name("Tapenade_Stack");
 
-BENCHMARK(BM_CrashTest_OS_Paging)->Iterations(1);
+static void BM_Clad_Disk_PushPop(benchmark::State& state) {
+  int64_t n = state.range(0);
+  clad::tape_impl<double, 64, 1024, /*is_multithread=*/false,
+                  /*DiskOffload=*/true>
+      t;
 
-static void BM_CrashTest_Clad_Offload(benchmark::State& state) {
-  AddBMCounterRAII MemCounters(*mm, state);
   for (auto _ : state) {
-    clad::tape_impl<double, 64, 1310720, /*is_Multithread=*/false,
-                    /*DiskOffload=*/true>
-        t;
+    for (int64_t i = 0; i < n; ++i)
+      t.emplace_back(1.0);
 
-    for (size_t i = 0; i < TARGET_ELEMENTS; ++i)
-      clad::push(t, 1.0);
+    for (int64_t i = 0; i < n; ++i) {
+      benchmark::DoNotOptimize(t.back());
+      t.pop_back();
+    }
   }
 }
-BENCHMARK(BM_CrashTest_Clad_Offload)->Iterations(1);
+BENCHMARK(BM_Clad_Disk_PushPop)
+    ->RangeMultiplier(4)
+    ->Range(1024, 262144)
+    ->Name("Clad_Disk_Stack");
 
 BENCHMARK_MAIN();
