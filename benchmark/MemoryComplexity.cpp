@@ -4,6 +4,11 @@
 #include "clad/Differentiator/Tape.h"
 #include <cstddef>
 #include <cstdint>
+
+extern "C" {
+void pushReal8(double x);
+void popReal8(double* x);
+}
 namespace {
   struct MemoryManager : public benchmark::MemoryManager {
     size_t cur_num_allocs = 0;
@@ -184,5 +189,45 @@ static void BM_CrashTest_Clad_Offload(benchmark::State& state) {
   }
 }
 BENCHMARK(BM_CrashTest_Clad_Offload)->Iterations(1);
+
+// Tapenade Comparison Benchmarks
+struct Tapenade {
+  void push(double val) { pushReal8(val); }
+  void pop(double* val) { popReal8(val); }
+};
+struct CladDisk {
+  clad::tape_impl<double, 64, 1024, /*is_multithread=*/false,
+                  /*DiskOffload=*/true>
+      tape;
+
+  void push(double val) { tape.emplace_back(val); }
+  void pop(double* val) {
+    *val = tape.back();
+    tape.pop_back();
+  }
+};
+template <typename Strategy> static void BM_PushPop(benchmark::State& state) {
+  int64_t n = state.range(0);
+  Strategy s; // Instantiate the specific strategy (Clad or Tapenade)
+
+  for (auto _ : state) {
+    for (int64_t i = 0; i < n; ++i)
+      s.push(1.0);
+    for (int64_t i = 0; i < n; ++i) {
+      double val;
+      s.pop(&val);
+      benchmark::DoNotOptimize(val);
+    }
+  }
+}
+BENCHMARK_TEMPLATE(BM_PushPop, Tapenade)
+    ->RangeMultiplier(4)
+    ->Range(1024, 262144)
+    ->Name("BM_PushPop/TapenadeStack");
+
+BENCHMARK_TEMPLATE(BM_PushPop, CladDisk)
+    ->RangeMultiplier(4)
+    ->Range(1024, 262144)
+    ->Name("BM_PushPop/CladDiskStack");
 
 BENCHMARK_MAIN();
