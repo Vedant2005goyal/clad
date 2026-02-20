@@ -28,8 +28,8 @@ template <typename T, std::size_t SLAB_SIZE> struct DiskManager {
 #ifndef __CUDA_ARCH__
   std::fstream file;
   std::string filename;
-  DiskManager() {
-    filename = "clad_tape_" + std::to_string((uintptr_t)this) + ".tmp";
+  DiskManager(const std::string& dir = "") {
+    filename = dir + "clad_tape_" + std::to_string((uintptr_t)this) + ".tmp";
     file.open(filename, std::ios::in | std::ios::out | std::ios::binary |
                             std::ios::trunc);
   }
@@ -55,6 +55,24 @@ template <typename T, std::size_t SLAB_SIZE> struct DiskManager {
   CUDA_HOST_DEVICE ~DiskManager() {}
   CUDA_HOST_DEVICE std::size_t write_slab(const T* data) { return 0; }
   CUDA_HOST_DEVICE void read_slab(T* dest, std::size_t offset) {}
+#endif
+};
+/// Derived class that routes tape storage to a RAM-backed filesystem (tmpfs) on
+/// Linux
+template <typename T, std::size_t SLAB_SIZE>
+struct RamDiskManager : public DiskManager<T, SLAB_SIZE> {
+#ifndef __CUDA_ARCH__
+  RamDiskManager(const std::string& custom_dir = "")
+      : DiskManager<T, SLAB_SIZE>(
+#if defined(__linux__)
+            custom_dir.empty() ? "/dev/shm/" : custom_dir // Linux RAM disk path
+#else
+            custom_dir.empty() ? "" : custom_dir // Fallback for Windows/macOS
+#endif
+        ) {
+  }
+#else
+  CUDA_HOST_DEVICE RamDiskManager() {}
 #endif
 };
 
@@ -518,6 +536,22 @@ private:
       (*arr)[i].~ElTy();
   }
 };
+/// Default trait that resolves to the standard clad::tape_impl.
+/// Users can specialize this struct to inject their own custom tape
+/// implementations.
+template <typename T, std::size_t SBO_SIZE = 64, std::size_t SLAB_SIZE = 1024,
+          bool is_multithread = false, bool DiskOffload = false>
+struct TapeTraits {
+  using Type = tape_impl<T, SBO_SIZE, SLAB_SIZE, is_multithread, DiskOffload>;
+};
+
+/// Alias template for code generation. Clad can generate code using
+/// `clad::custom_tape` instead of hardcoding `clad::tape_impl`, allowing
+/// seamless user overrides.
+template <typename T, std::size_t SBO_SIZE = 64, std::size_t SLAB_SIZE = 1024,
+          bool is_multithread = false, bool DiskOffload = false>
+using custom_tape = typename TapeTraits<T, SBO_SIZE, SLAB_SIZE, is_multithread,
+                                        DiskOffload>::Type;
 } // namespace clad
 
 #endif // CLAD_TAPE_H
