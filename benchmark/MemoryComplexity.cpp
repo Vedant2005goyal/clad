@@ -116,26 +116,62 @@ static void BM_TapeMemory_Templated(benchmark::State& state) {
 REGISTER_TAPE_BENCHMARK(64, 1024);
 REGISTER_TAPE_BENCHMARK(32, 512);
 
+template <typename T, std::size_t SBO_SIZE, std::size_t SLAB_SIZE,
+          bool is_Multithread, bool DiskOffload>
+class BenchmarkDualMode : public clad::tape_impl<T, SBO_SIZE, SLAB_SIZE,
+                                                 is_Multithread, DiskOffload> {
+public:
+  using clad::tape_impl<T, SBO_SIZE, SLAB_SIZE, is_Multithread,
+                        DiskOffload>::tape_impl;
+
+  void setmax_ram_slabs(std::size_t max_slabs) {
+    this->getDiskInfo().m_MaxRamSlabs = max_slabs;
+  }
+
+  void setfile_offload(bool offload) {
+    this->getDiskInfo().m_use_file_offload = offload;
+  }
+};
+
 // This explicitly tests the case where DiskOffload = true
 template <std::size_t SBO_SIZE, std::size_t SLAB_SIZE>
-static void BM_Multilayer_Storage(benchmark::State& state) {
+static void BM_Multilayer_Storage_RAMDISK(benchmark::State& state) {
   int64_t block = state.range(0);
   AddBMCounterRAII MemCounters(*mm, state);
   for (auto _ : state) {
-    // Set DiskOffload = true here
-    clad::tape_impl<double, SBO_SIZE, SLAB_SIZE, /*is_Multithread=*/false,
-                    /*DiskOffload=*/true>
+    BenchmarkDualMode<double, SBO_SIZE, SLAB_SIZE, /*is_Multithread=*/false,
+                      /*DiskOffload=*/true>
         t;
+    t.setmax_ram_slabs(2);
+    t.setfile_offload(false); // RAM-Disk Mode
     func<double, SBO_SIZE, SLAB_SIZE, /*DiskOffload=*/true>(t, 1,
                                                             block * 2 + 1);
   }
 }
-
-BENCHMARK_TEMPLATE(BM_Multilayer_Storage, 64, 1024)
+BENCHMARK_TEMPLATE(BM_Multilayer_Storage_RAMDISK, 64, 1024)
     ->RangeMultiplier(2)
     ->Range(0, 4096)
-    ->Name("BM_Multilayer_Storage/SBO_64_SLAB_1024_DISK");
+    ->Name("BM_Multilayer_Storage/SBO_64_SLAB_1024_RAMDISK");
 
+// 2. File-Offload Mode (use_file_offload = true)
+template <std::size_t SBO_SIZE, std::size_t SLAB_SIZE>
+static void BM_Multilayer_Storage_FILE_OFFLOAD(benchmark::State& state) {
+  int64_t block = state.range(0);
+  AddBMCounterRAII MemCounters(*mm, state);
+  for (auto _ : state) {
+    BenchmarkDualMode<double, SBO_SIZE, SLAB_SIZE, /*is_Multithread=*/false,
+                      /*DiskOffload=*/true>
+        t;
+    t.setmax_ram_slabs(2);
+    t.setfile_offload(true); // Disk-Offload Mode
+    func<double, SBO_SIZE, SLAB_SIZE, /*DiskOffload=*/true>(t, 1,
+                                                            block * 2 + 1);
+  }
+}
+BENCHMARK_TEMPLATE(BM_Multilayer_Storage_FILE_OFFLOAD, 64, 1024)
+    ->RangeMultiplier(2)
+    ->Range(0, 4096)
+    ->Name("BM_Multilayer_Storage/SBO_64_SLAB_1024_FILE_OFFLOAD");
 #include "BenchmarkedFunctions.h"
 static void BM_ReverseGausMemoryP(benchmark::State& state) {
   auto dfdp_grad = clad::gradient(gaus, "p");
@@ -196,9 +232,10 @@ struct Tapenade {
   void pop(double* val) { popReal8(val); }
 };
 struct CladDisk {
-  clad::tape_impl<double, 64, 1024, /*is_multithread=*/false,
-                  /*DiskOffload=*/true>
+  BenchmarkDualMode<double, 64, 1024, /*is_multithread=*/false,
+                    /*DiskOffload=*/true>
       tape;
+  CladDisk() { tape.setfile_offload(true); }
 
   void push(double val) { tape.emplace_back(val); }
   void pop(double* val) {

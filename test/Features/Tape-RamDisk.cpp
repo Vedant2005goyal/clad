@@ -29,11 +29,19 @@ int main() {
   printf("Standard tape back: %.2f\n", default_tape.back());
   // CHECK-EXEC: Standard tape back: 3.14
 
-  // Test RamDiskManager behavior
-  clad::detail::RamDiskManager<double, 1024> custom_manager("/custom/ram/disk/");
-  bool has_path = custom_manager.filename.find("/custom/ram/disk/") == 0;
-  printf("Custom RamDisk path ok: %d\n", has_path);
-  // CHECK-EXEC: Custom RamDisk path ok: 1
+  // Test RamDiskManager 
+  clad::detail::RamDiskManager<double, 1024> mmap_manager;
+  double test_data[1024];
+  for(int i = 0; i < 1024; ++i) 
+    test_data[i] = i * 1.5;
+
+  size_t offset = mmap_manager.write_slab(test_data);
+  double read_data[1024];
+  mmap_manager.read_slab(read_data, offset);
+
+  bool mmap_ok = (read_data[0] == 0.0 && read_data[1023] == 1023 * 1.5);
+  printf("Mmap manager read/write ok: %d\n", mmap_ok);
+  // CHECK-EXEC: Mmap manager read/write ok: 1
 
   // Test Tape Specialization Hook
   // It will use MockTape rather tape_impl since we have used float instead of double here
@@ -42,6 +50,16 @@ int main() {
   // CHECK-EXEC: Mock push: 2.71
   printf("Specialized tape back: %.1f\n", specialized_tape.back());
   // CHECK-EXEC: Specialized tape back: 99.9
+
+  clad::detail::DiskManager<double, 1024> file_backed_manager("/tmp");
+  
+  size_t file_offset = file_backed_manager.write_slab(test_data);
+  double file_read_data[1024];
+  file_backed_manager.read_slab(file_read_data, file_offset);
+
+  bool file_mmap_ok = (file_read_data[0] == 0.0 && file_read_data[1023] == 1023 * 1.5);
+  printf("File-Backed manager read/write ok: %d\n", file_mmap_ok);
+  // CHECK-EXEC: File-Backed manager read/write ok: 1
 
   return 0;
 }
