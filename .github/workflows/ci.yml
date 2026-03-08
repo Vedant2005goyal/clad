@@ -67,7 +67,7 @@ jobs:
         include:
           # --- LINUX: Last 10 Runtimes (12-21) ---
           # Using Ubuntu 22.04 for older runtimes, 24.04 for newer ones
-          - { name: ubu22-gcc10-runtime11, os: ubuntu-22.04, compiler: gcc-10, clang-runtime: '11' }
+          - { name: ubu22-gcc10-runtime11, os: ubuntu-22.04, compiler: gcc-10, clang-runtime: '15' }
           - { name: ubu22-gcc11-runtime12, os: ubuntu-22.04, compiler: gcc-11, clang-runtime: '12' }
           - { name: ubu22-clang13-runtime13, os: ubuntu-22.04, compiler: clang-13, clang-runtime: '13' }
           - { name: ubu24-gcc13-runtime14, os: ubuntu-24.04, compiler: gcc-13, clang-runtime: '14' }
