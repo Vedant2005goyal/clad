@@ -6,7 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
-#include <cstdlib> // Added for mkstemp
+#include <cstdlib>
 #include <iterator>
 #include <memory>
 #include <new>
@@ -247,13 +247,8 @@ public:
 /// slabs if capacity exceeds SBO.
 template <typename T, std::size_t SBO_SIZE = 64, std::size_t SLAB_SIZE = 1024,
           bool is_multithread = false, bool DiskOffload = false>
-class tape_impl {
-  /// Storage planning for slabs kept in memory (RAM).
-  /// Provides access to the raw data buffer.
+class tape_storage {
   struct RAMStorage {
-    // std::aligned_storage_t<sizeof(T), alignof(T)> raw_data[SLAB_SIZE];
-    // For now use the implementation below as above implementation is not
-    // supported by c++11
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-member-init)
     alignas(T) char raw_data[SLAB_SIZE * sizeof(T)];
     CUDA_HOST_DEVICE RAMStorage() {}
@@ -299,10 +294,7 @@ public:
     CUDA_HOST_DEVICE Slab() : prev(nullptr), next(nullptr) {}
   };
 
-private:
-  // std::aligned_storage_t<sizeof(T), alignof(T)> m_static_buffer[SBO_SIZE];
-  // For now use the implementation below as above implementation is not
-  // supported by c++11
+protected: // Changed to Protected so Derived class can access members
   // NOLINTNEXTLINE(cppcoreguidelines-pro-type-member-init)
   alignas(T) char m_static_buffer[SBO_SIZE * sizeof(T)];
 
@@ -328,6 +320,12 @@ private:
   // NOLINTNEXTLINE(readability-identifier-naming)
   DiskInfoType m_state;
 
+  DiskInfo& getDiskInfo() {
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+    return *reinterpret_cast<DiskInfo*>(&m_state);
+  }
+
+  // ... [Internal Helpers: sbo_elements, check_and_evict_impl, etc.] ...
   CUDA_HOST_DEVICE T* sbo_elements() {
 #if __cplusplus >= 201703L
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
@@ -404,7 +402,80 @@ private:
     ensure_loaded_impl(slab, std::integral_constant<bool, DiskOffload>{});
   }
 
+  CUDA_HOST_DEVICE T* at(std::size_t index) {
+    if (index < SBO_SIZE)
+      return sbo_elements() + index;
+    Slab* slab = m_head;
+    std::size_t idx = (index - SBO_SIZE) / SLAB_SIZE;
+    while (idx--)
+      slab = slab->next;
+    if (DiskOffload)
+      ensure_loaded(slab);
+    return slab->elements() + ((index - SBO_SIZE) % SLAB_SIZE);
+  }
+
+  CUDA_HOST_DEVICE const T* at(std::size_t index) const {
+    if (index < SBO_SIZE)
+      return sbo_elements() + index;
+    Slab* slab = m_head;
+    std::size_t idx = (index - SBO_SIZE) / SLAB_SIZE;
+    while (idx--)
+      slab = slab->next;
+    return slab->elements() + ((index - SBO_SIZE) % SLAB_SIZE);
+  }
+
+  template <typename It> using value_type_of = decltype(*std::declval<It>());
+  template <typename It>
+  static typename std::enable_if<
+      !std::is_trivially_destructible<value_type_of<It>>::value>::type
+  destroy(It B, It E) {
+    for (It I = E - 1; I >= B; --I)
+      I->~value_type_of<It>();
+  }
+  template <typename It>
+  static typename std::enable_if<
+      std::is_trivially_destructible<value_type_of<It>>::value>::type
+      CUDA_HOST_DEVICE
+      destroy(It B, It E) {}
+
+  template <typename ElTy> void destroy_element(ElTy* elem) { elem->~ElTy(); }
+  template <typename ElTy, size_t N> void destroy_element(ElTy (*arr)[N]) {
+    for (size_t i = 0; i < N; ++i)
+      (*arr)[i].~ElTy();
+  }
+
+  void clear_impl(std::true_type) {
+    std::size_t count = m_size;
+    for (std::size_t i = 0; i < SBO_SIZE && count > 0; ++i, --count)
+      destroy_element(&sbo_elements()[i]);
+    Slab* slab = m_head;
+    while (slab) {
+      size_t current_slab_count = (count > SLAB_SIZE) ? SLAB_SIZE : count;
+      count -= current_slab_count;
+      Slab* tmp = slab;
+      slab = slab->next;
+      delete tmp;
+    }
+    getDiskInfo().m_ActiveSlabs = 0;
+  }
+
+  void clear_impl(std::false_type) {
+    std::size_t count = m_size;
+    for (std::size_t i = 0; i < SBO_SIZE && count > 0; ++i, --count)
+      destroy_element(&sbo_elements()[i]);
+    Slab* slab = m_head;
+    while (slab) {
+      T* elems = slab->elements();
+      for (size_t i = 0; i < SLAB_SIZE && count > 0; ++i, --count)
+        destroy_element(elems + i);
+      Slab* tmp = slab;
+      slab = slab->next;
+      delete tmp;
+    }
+  }
+
 public:
+  // Public Interface needed by users (iterators, push/pop)
   using reference = T&;
   using const_reference = const T&;
   using pointer = T*;
@@ -417,44 +488,31 @@ public:
   using const_iterator =
       tape_iterator<const T, SBO_SIZE, SLAB_SIZE, is_multithread, DiskOffload>;
 
-  DiskInfo& getDiskInfo() {
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
-    return *reinterpret_cast<DiskInfo*>(&m_state);
-  }
-
 #ifndef __CUDACC__
-
   std::mutex& mutex() const { return m_TapeMutex; }
-
 #endif
-  CUDA_HOST_DEVICE tape_impl() = default;
 
-  CUDA_HOST_DEVICE ~tape_impl() { clear(); }
+  CUDA_HOST_DEVICE tape_storage() = default;
+  CUDA_HOST_DEVICE ~tape_storage() { clear(); }
 
-  tape_impl(const tape_impl&) = delete;
-  tape_impl& operator=(const tape_impl&) = delete;
+  tape_storage(const tape_storage&) = delete;
+  tape_storage& operator=(const tape_storage&) = delete;
+  tape_storage(tape_storage&& other) = delete;
+  tape_storage& operator=(tape_storage&& other) = delete;
 
-  tape_impl(tape_impl&& other) = delete;
-  tape_impl& operator=(tape_impl&& other) = delete;
-
-  /// Add new value of type T constructed from args to the end of the tape.
   template <typename... ArgsT>
   CUDA_HOST_DEVICE void emplace_back(ArgsT&&... args) {
     if (m_size < SBO_SIZE) {
-      // Store in SBO buffer
       ::new (const_cast<void*>(static_cast<const volatile void*>(
           sbo_elements() + m_size))) T(std::forward<ArgsT>(args)...);
     } else {
       const auto offset = (m_size - SBO_SIZE) % SLAB_SIZE;
-      // Allocate new slab if required
       if (!offset) {
         if (m_size == m_capacity) {
           check_and_evict();
-
           Slab* new_slab = new Slab();
           if (DiskOffload)
             getDiskInfo().m_ActiveSlabs++;
-
           if (!m_head)
             m_head = new_slab;
           else {
@@ -468,8 +526,6 @@ public:
         else
           m_tail = m_tail->next;
       }
-
-      // Construct element in-place
       if (DiskOffload)
         ensure_loaded(m_tail);
       ::new (const_cast<void*>(static_cast<const volatile void*>(
@@ -480,19 +536,37 @@ public:
 
   CUDA_HOST_DEVICE std::size_t size() const { return m_size; }
 
-  CUDA_HOST_DEVICE iterator begin() { return iterator(this, 0); }
-
+  // NOTE: Iterators cast 'this' to 'tape_impl' because that's what the iterator
+  // expects
+  CUDA_HOST_DEVICE iterator begin() {
+    return iterator(
+        reinterpret_cast<
+            tape_impl<T, SBO_SIZE, SLAB_SIZE, is_multithread, DiskOffload>*>(
+            this),
+        0);
+  }
   CUDA_HOST_DEVICE const_iterator begin() const {
-    return const_iterator(this, 0);
+    return const_iterator(
+        reinterpret_cast<
+            tape_impl<T, SBO_SIZE, SLAB_SIZE, is_multithread, DiskOffload>*>(
+            const_cast<tape_storage*>(this)),
+        0);
   }
-
-  CUDA_HOST_DEVICE iterator end() { return iterator(this, m_size); }
-
+  CUDA_HOST_DEVICE iterator end() {
+    return iterator(
+        reinterpret_cast<
+            tape_impl<T, SBO_SIZE, SLAB_SIZE, is_multithread, DiskOffload>*>(
+            this),
+        m_size);
+  }
   CUDA_HOST_DEVICE const_iterator end() const {
-    return const_iterator(this, m_size);
+    return const_iterator(
+        reinterpret_cast<
+            tape_impl<T, SBO_SIZE, SLAB_SIZE, is_multithread, DiskOffload>*>(
+            const_cast<tape_storage*>(this)),
+        m_size);
   }
 
-  /// Access last value (must not be empty).
   CUDA_HOST_DEVICE reference back() {
     assert(m_size);
     std::size_t index = m_size - 1;
@@ -509,10 +583,8 @@ public:
     std::size_t index = m_size - 1;
     if (index < SBO_SIZE)
       return *(sbo_elements() + index);
-    if (DiskOffload) {
-      // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
-      const_cast<tape_impl*>(this)->ensure_loaded(m_tail);
-    }
+    if (DiskOffload)
+      const_cast<tape_storage*>(this)->ensure_loaded(m_tail);
     index = (index - SBO_SIZE) % SLAB_SIZE;
     return *(m_tail->elements() + index);
   }
@@ -524,11 +596,9 @@ public:
 
   CUDA_HOST_DEVICE const_reference operator[](std::size_t i) const {
     assert(i < m_size);
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
-    return *const_cast<tape_impl*>(this)->at(i);
+    return *const_cast<tape_storage*>(this)->at(i);
   }
 
-  /// Remove the last value from the tape.
   CUDA_HOST_DEVICE void pop_back() {
     assert(m_size);
     m_size--;
@@ -537,96 +607,12 @@ public:
     else {
       if (DiskOffload)
         ensure_loaded(m_tail);
-
       std::size_t offset = (m_size - SBO_SIZE) % SLAB_SIZE;
       destroy_element(m_tail->elements() + offset);
       if (offset == 0) {
         if (m_tail != m_head)
           m_tail = m_tail->prev;
       }
-    }
-  }
-
-private:
-  /// Returns pointer to element at specified index, handling SBO or slab lookup
-  CUDA_HOST_DEVICE T* at(std::size_t index) {
-    if (index < SBO_SIZE)
-      return sbo_elements() + index;
-
-    Slab* slab = m_head;
-    std::size_t idx = (index - SBO_SIZE) / SLAB_SIZE;
-    while (idx--)
-      slab = slab->next;
-
-    if (DiskOffload)
-      ensure_loaded(slab);
-
-    return slab->elements() + ((index - SBO_SIZE) % SLAB_SIZE);
-  }
-
-  CUDA_HOST_DEVICE const T* at(std::size_t index) const {
-    if (index < SBO_SIZE)
-      return sbo_elements() + index;
-    Slab* slab = m_head;
-    std::size_t idx = (index - SBO_SIZE) / SLAB_SIZE;
-    while (idx--)
-      slab = slab->next;
-
-    // Const version cannot ensure loaded if DiskOffload is true
-    return slab->elements() + ((index - SBO_SIZE) % SLAB_SIZE);
-  }
-
-  template <typename It> using value_type_of = decltype(*std::declval<It>());
-
-  // Call destructor for every value in the given range.
-  template <typename It>
-  static typename std::enable_if<
-      !std::is_trivially_destructible<value_type_of<It>>::value>::type
-  destroy(It B, It E) {
-    for (It I = E - 1; I >= B; --I)
-      I->~value_type_of<It>();
-  }
-
-  // If type is trivially destructible, its destructor is no-op, so we can avoid
-  // for loop here.
-  template <typename It>
-  static typename std::enable_if<
-      std::is_trivially_destructible<value_type_of<It>>::value>::type
-      CUDA_HOST_DEVICE
-      destroy(It B, It E) {}
-
-  /// Destroys all elements and deallocates slabs
-  void clear_impl(std::true_type) {
-    std::size_t count = m_size;
-    for (std::size_t i = 0; i < SBO_SIZE && count > 0; ++i, --count)
-      destroy_element(&sbo_elements()[i]);
-
-    Slab* slab = m_head;
-    while (slab) {
-      size_t current_slab_count = (count > SLAB_SIZE) ? SLAB_SIZE : count;
-      count -= current_slab_count;
-      Slab* tmp = slab;
-      slab = slab->next;
-      // NOLINTNEXTLINE(cppcoreguidelines-owning-memory)
-      delete tmp;
-    }
-    getDiskInfo().m_ActiveSlabs = 0;
-  }
-
-  void clear_impl(std::false_type) {
-    std::size_t count = m_size;
-    for (std::size_t i = 0; i < SBO_SIZE && count > 0; ++i, --count)
-      destroy_element(&sbo_elements()[i]);
-
-    Slab* slab = m_head;
-    while (slab) {
-      T* elems = slab->elements();
-      for (size_t i = 0; i < SLAB_SIZE && count > 0; ++i, --count)
-        destroy_element(elems + i);
-      Slab* tmp = slab;
-      slab = slab->next;
-      // NOLINTNEXTLINE(cppcoreguidelines-owning-memory)
-      delete tmp;
     }
   }
 
@@ -637,25 +623,36 @@ private:
     m_size = 0;
     m_capacity = SBO_SIZE;
   }
+};
 
-  template <typename ElTy> void destroy_element(ElTy* elem) { elem->~ElTy(); }
-  template <typename ElTy, size_t N> void destroy_element(ElTy (*arr)[N]) {
-    for (size_t i = 0; i < N; ++i)
-      (*arr)[i].~ElTy();
+template <typename T, std::size_t SBO_SIZE = 64, std::size_t SLAB_SIZE = 1024,
+          bool is_multithread = false, bool DiskOffload = false>
+class tape_impl
+    : public tape_storage<T, SBO_SIZE, SLAB_SIZE, is_multithread, DiskOffload> {
+public:
+  using Base =
+      tape_storage<T, SBO_SIZE, SLAB_SIZE, is_multithread, DiskOffload>;
+  using Base::Base; // Inherit constructors
+
+  // YOUR INCORPORATED BENCHMARK LOGIC
+  // We check 'DiskOffload' to prevent memory corruption (Safety Fix).
+  void setmax_ram_slabs(std::size_t max_slabs) {
+    if constexpr (DiskOffload)
+      this->getDiskInfo().m_MaxRamSlabs = max_slabs;
+  }
+
+  void setfile_offload(bool use_file) {
+    if constexpr (DiskOffload)
+      this->getDiskInfo().m_use_file_offload = use_file;
   }
 };
-/// Default trait that resolves to the standard clad::tape_impl.
-/// Users can specialize this struct to inject their own custom tape
-/// implementations.
+
 template <typename T, std::size_t SBO_SIZE = 64, std::size_t SLAB_SIZE = 1024,
           bool is_multithread = false, bool DiskOffload = false>
 struct TapeTraits {
   using Type = tape_impl<T, SBO_SIZE, SLAB_SIZE, is_multithread, DiskOffload>;
 };
 
-/// Alias template for code generation. Clad can generate code using
-/// `clad::custom_tape` instead of hardcoding `clad::tape_impl`, allowing
-/// seamless user overrides.
 template <typename T, std::size_t SBO_SIZE = 64, std::size_t SLAB_SIZE = 1024,
           bool is_multithread = false, bool DiskOffload = false>
 using custom_tape = typename TapeTraits<T, SBO_SIZE, SLAB_SIZE, is_multithread,

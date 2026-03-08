@@ -123,14 +123,6 @@ class BenchmarkDualMode : public clad::tape_impl<T, SBO_SIZE, SLAB_SIZE,
 public:
   using clad::tape_impl<T, SBO_SIZE, SLAB_SIZE, is_Multithread,
                         DiskOffload>::tape_impl;
-
-  void setmax_ram_slabs(std::size_t max_slabs) {
-    this->getDiskInfo().m_MaxRamSlabs = max_slabs;
-  }
-
-  void setfile_offload(bool offload) {
-    this->getDiskInfo().m_use_file_offload = offload;
-  }
 };
 
 // This explicitly tests the case where DiskOffload = true
