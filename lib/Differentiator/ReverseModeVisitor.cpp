@@ -2011,9 +2011,12 @@ Expr* ReverseModeVisitor::getStdInitListSizeExpr(const Expr* E) {
     // We need to check if the last parameter is actually a tracker because
     // custom derivatives currently don't have it.
     if (calleeFnForwPassFD) {
-      QualType lastParamType =
-          calleeFnForwPassFD->parameters().back()->getType();
-      usingRestoreTracker = (utils::GetValueType(lastParamType) == trackerType);
+      if (!calleeFnForwPassFD->parameters().empty()) {
+        QualType lastParamType =
+            calleeFnForwPassFD->parameters().back()->getType();
+        usingRestoreTracker =
+            (utils::GetValueType(lastParamType) == trackerType);
+      }
     }
 
     // FIXME: consider moving non-diff analysis to DiffPlanner.
