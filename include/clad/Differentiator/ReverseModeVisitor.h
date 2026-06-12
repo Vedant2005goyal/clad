@@ -802,6 +802,15 @@ namespace clad {
 
     /// A flag indicating if the Stmt is contained in a checkpointed loop.
     bool m_IsInsideCheckpointedLoop = false;
+
+    /// Handles differentiation logic specifically for CUDA shared memory
+    /// declarations and includes cloning and zero-initialization for static and
+    /// dynamic shared memory
+    void HandleCUDASharedMemoryDecl(
+        const clang::VarDecl* VD, clang::VarDecl* VDDerived,
+        llvm::SmallVectorImpl<clang::Stmt*>& memsetCalls);
+    void CloneCUDASharedAttr(const clang::VarDecl* OriginalVD,
+                             clang::VarDecl* TargetVD);
   };
 } // end namespace clad
 
