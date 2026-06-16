@@ -806,11 +806,8 @@ namespace clad {
     /// Handles differentiation logic specifically for CUDA shared memory
     /// declarations and includes cloning and zero-initialization for static and
     /// dynamic shared memory
-    void HandleCUDASharedMemoryDecl(
-        const clang::VarDecl* VD, clang::VarDecl* VDDerived,
-        llvm::SmallVectorImpl<clang::Stmt*>& memsetCalls);
-    void CloneCUDASharedAttr(const clang::VarDecl* OriginalVD,
-                             clang::VarDecl* TargetVD);
+    void HandleCUDASharedMemoryDecl(const clang::VarDecl* VD, clang::VarDecl* VDDerived,
+    llvm::SmallVectorImpl<clang::Stmt*>& memsetCalls) ;
   };
 } // end namespace clad
 
