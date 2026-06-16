@@ -3106,7 +3106,6 @@ Expr* ReverseModeVisitor::getStdInitListSizeExpr(const Expr* E) {
                                          dummyInit, false, nullptr, SC);
         }
         if (!isDynamicSharedMem && VD->hasAttr<clang::CUDASharedAttr>()) {
-          CloneCUDASharedAttr(VD, VDDerived);
           VDDerived->setInit(nullptr);
         }
       }
@@ -3235,8 +3234,6 @@ Expr* ReverseModeVisitor::getStdInitListSizeExpr(const Expr* E) {
       initDiff.updateStmtDx(finalInit);
     }
 
-    CloneCUDASharedAttr(VD, VDClone);
-
     // The choice of isDirectInit is mostly stylistic.
     bool isRealConstArray = false;
     if (const auto* arrType = dyn_cast<ConstantArrayType>(VDType))
@@ -3347,49 +3344,49 @@ Expr* ReverseModeVisitor::getStdInitListSizeExpr(const Expr* E) {
     Stmt* ReverseResult = utils::unwrapIfSingleStmt(RCS);
     return {StmtDiff(ForwardResult, ReverseResult), EDiff};
   }
-  void ReverseModeVisitor::CloneCUDASharedAttr(const clang::VarDecl* OriginalVD,
-                                               clang::VarDecl* TargetVD) {
-    if (OriginalVD->hasAttr<clang::CUDASharedAttr>()) {
-      auto* SharedAttr = clang::CUDASharedAttr::CreateImplicit(
-          m_Context, OriginalVD->getAttr<clang::CUDASharedAttr>()->getRange());
-      SharedAttr->setImplicit(false);
-      TargetVD->addAttr(SharedAttr);
-      TargetVD->setStorageClass(
-          OriginalVD->getStorageClass() == clang::SC_Extern ? clang::SC_Extern
-                                                            : clang::SC_Static);
-    }
-  }
-  void ReverseModeVisitor::HandleCUDASharedMemoryDecl(
-      const clang::VarDecl* VD, clang::VarDecl* VDDerived,
-      llvm::SmallVectorImpl<clang::Stmt*>& memsetCalls) {
-    bool isDynamicSharedMem = VD->getType()->isIncompleteArrayType();
+  // void ReverseModeVisitor::CloneCUDASharedAttr(const clang::VarDecl* OriginalVD,
+  //                                              clang::VarDecl* TargetVD) {
+  //   if (OriginalVD->hasAttr<clang::CUDASharedAttr>()) {
+  //     auto* SharedAttr = clang::CUDASharedAttr::CreateImplicit(
+  //         m_Context, OriginalVD->getAttr<clang::CUDASharedAttr>()->getRange());
+  //     SharedAttr->setImplicit(false);
+  //     TargetVD->addAttr(SharedAttr);
+  //     TargetVD->setStorageClass(
+  //         OriginalVD->getStorageClass() == clang::SC_Extern ? clang::SC_Extern
+  //                                                           : clang::SC_Static);
+  //   }
+  // }
+  // void ReverseModeVisitor::HandleCUDASharedMemoryDecl(
+  //     const clang::VarDecl* VD, clang::VarDecl* VDDerived,
+  //     llvm::SmallVectorImpl<clang::Stmt*>& memsetCalls) {
+  //   bool isDynamicSharedMem = VD->getType()->isIncompleteArrayType();
 
-    // 2. Handle Zero-Initialization (Static vs Dynamic)
-    if (!isDynamicSharedMem) {
-      // Static Shared Memory zero-init
-      llvm::SmallVector<Expr*, 1> args = {BuildDeclRef(VDDerived)};
-      Stmt* initCall = GetCladZeroInit(args);
-      if (initCall)
-        memsetCalls.push_back(initCall);
-    } else {
-      // Dynamic Shared Memory: Automate zero-init purely via AST
-      Expr* derivedRef = BuildDeclRef(VDDerived);
-      Expr* zeroIdx =
-          ConstantFolder::synthesizeLiteral(m_Context.IntTy, m_Context, 0);
+  //   // 2. Handle Zero-Initialization (Static vs Dynamic)
+  //   if (!isDynamicSharedMem) {
+  //     // Static Shared Memory zero-init
+  //     llvm::SmallVector<Expr*, 1> args = {BuildDeclRef(VDDerived)};
+  //     Stmt* initCall = GetCladZeroInit(args);
+  //     if (initCall)
+  //       memsetCalls.push_back(initCall);
+  //   } else {
+  //     // Dynamic Shared Memory: Automate zero-init purely via AST
+  //     Expr* derivedRef = BuildDeclRef(VDDerived);
+  //     Expr* zeroIdx =
+          // ConstantFolder::synthesizeLiteral(m_Context.IntTy, m_Context, 0);
 
-      // Create the array subscript: _d_sharedMem1[0]
-      Expr* arraySub = BuildArraySubscript(derivedRef, {zeroIdx});
+  //     // Create the array subscript: _d_sharedMem1[0]
+  //     Expr* arraySub = BuildArraySubscript(derivedRef, {zeroIdx});
 
-      // Get the underlying type (e.g., int) so we assign the correct type of
-      // zero
-      QualType elemType = VDDerived->getType()->getPointeeType();
+  //     // Get the underlying type (e.g., int) so we assign the correct type of
+  //     // zero
+  //     QualType elemType = VDDerived->getType()->getPointeeType();
 
-      // Create the assignment: _d_sharedMem1[0] = 0
-      Expr* assignZero = BuildOp(BO_Assign, arraySub, getZeroInit(elemType));
+  //     // Create the assignment: _d_sharedMem1[0] = 0
+  //     Expr* assignZero = BuildOp(BO_Assign, arraySub, getZeroInit(elemType));
 
-      memsetCalls.push_back(assignZero);
-    }
-  }
+  //     memsetCalls.push_back(assignZero);
+  //   }
+  // }
 
   StmtDiff ReverseModeVisitor::VisitDeclStmt(const DeclStmt* DS) {
     llvm::SmallVector<Stmt*, 16> inits;
