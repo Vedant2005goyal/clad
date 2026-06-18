@@ -4893,7 +4893,7 @@ Expr* ReverseModeVisitor::getStdInitListSizeExpr(const Expr* E) {
     for (size_t i = 0, s = params.size(), p = s; i < s - HasThis - HasRet;
          ++i) {
       const ParmVarDecl* oPVD = FD->getParamDecl(i);
-
+      llvm::errs() << "Current param : " << oPVD << "\n";
       if (clad::utils::hasNonDifferentiableAttribute(oPVD))
         continue;
       // FIXME: We can't use std::find(DVI.begin(), DVI.end()) because the
@@ -4902,6 +4902,7 @@ Expr* ReverseModeVisitor::getStdInitListSizeExpr(const Expr* E) {
       // DiffInputVarInfo to check if this is a variable we differentiate wrt.
       bool IsSelected = false;
       for (const DiffInputVarInfo& VarInfo : m_DiffReq.DVI) {
+        llvm::errs() << "Selected param: " << VarInfo.param << "\n";
         if (VarInfo.param == oPVD) {
           IsSelected = true;
           break;
