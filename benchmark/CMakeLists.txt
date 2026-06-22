@@ -18,7 +18,16 @@ FetchContent_Declare(
   GIT_TAG        6f8cb04a4168cac5f6242cdeb65f6816c413f4ee 
   GIT_PROGRESS   TRUE      
 )
-FetchContent_MakeAvailable(tapenade_kit)
+FetchContent_Declare(
+  LULESH-CUDA
+  GIT_REPOSITORY https://github.com/Vedant2005goyal/LULESH-CUDA.git
+  GIT_TAG        63a09dd81b34d13bb835ad7174b2b6e2b0405ba5
+  GIT_PROGRESS   TRUE
+)
+FetchContent_MakeAvailable(
+  tapenade_kit
+  LULESH-CUDA
+)
 
 # Build the support library for the stack from the fetched source
 add_library(tapenade_support STATIC ${tapenade_kit_SOURCE_DIR}/ADFirstAidKit/adStack.c)
@@ -56,9 +65,30 @@ if (BLAS_FOUND)
     target_compile_definitions(GPT2Training PRIVATE HAVE_CBLAS)
 endif()
 
+
 target_link_libraries(MemoryComplexity_tapenade PRIVATE tapenade_support)
 
 add_custom_target(benchmark-clad COMMAND ${CMAKE_CTEST_COMMAND} -V
   DEPENDS ${CLAD_BENCHMARK_DEPS} WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
 
-set_target_properties(benchmark-clad PROPERTIES FOLDER "Clad benchmarks")
+find_package(CUDAToolkit QUIET)
+if(CUDAToolkit_FOUND)
+  set(LULESH_SOURCES
+      ${lulesh-cuda_SOURCE_DIR}/allocator.cu
+      ${lulesh-cuda_SOURCE_DIR}/lulesh.cu
+      ${lulesh-cuda_SOURCE_DIR}/lulesh-comms.cu
+      ${lulesh-cuda_SOURCE_DIR}/lulesh-comms-gpu.cu
+  )
+  
+  set_source_files_properties(${LULESH_SOURCES} PROPERTIES LANGUAGE CXX)
+  CB_ADD_CUDA_BENCHMARK(LULESH_Benchmark ${LULESH_SOURCES})
+    target_compile_definitions(LULESH_Benchmark PRIVATE 
+      RESTRICT=1 
+      VERIFY=1 
+      Normal_forward=0
+  )
+
+  target_include_directories(LULESH_Benchmark PRIVATE ${lulesh-cuda_SOURCE_DIR}) 
+endif()
+
+
