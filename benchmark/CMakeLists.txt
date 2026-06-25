@@ -19,11 +19,10 @@ FetchContent_Declare(
   GIT_PROGRESS   TRUE      
 )
 FetchContent_Declare(
-  LULESH-CUDA
-  GIT_REPOSITORY https://github.com/Vedant2005goyal/LULESH-CUDA.git
-  GIT_TAG        63a09dd81b34d13bb835ad7174b2b6e2b0405ba5
-  GIT_PROGRESS   TRUE
-)
+    LULESH-CUDA
+    GIT_REPOSITORY https://github.com/wsmoses/Enzyme-GPU-Tests.git
+    GIT_TAG        9be62d07ad09ee22d03e1b8f8be28c6852eb7f70
+  )
 FetchContent_MakeAvailable(
   tapenade_kit
   LULESH-CUDA
@@ -65,29 +64,41 @@ if (BLAS_FOUND)
     target_compile_definitions(GPT2Training PRIVATE HAVE_CBLAS)
 endif()
 
-
 target_link_libraries(MemoryComplexity_tapenade PRIVATE tapenade_support)
 
 add_custom_target(benchmark-clad COMMAND ${CMAKE_CTEST_COMMAND} -V
-  DEPENDS ${CLAD_BENCHMARK_DEPS} WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+    DEPENDS ${CLAD_BENCHMARK_DEPS} WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+set_target_properties(benchmark-clad PROPERTIES FOLDER "Clad benchmarks")  
 
 find_package(CUDAToolkit QUIET)
 if(CUDAToolkit_FOUND)
+  execute_process(
+  COMMAND git apply --check "${CMAKE_CURRENT_SOURCE_DIR}/LULESH_diff.patch"
+  WORKING_DIRECTORY "${lulesh-cuda_SOURCE_DIR}/LULESH"
+  RESULT_VARIABLE patch_applied_or_not
+  )
+
+  if(patch_applied_or_not EQUAL 0)
+    execute_process(
+      COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/LULESH_diff.patch"
+      WORKING_DIRECTORY "${lulesh-cuda_SOURCE_DIR}/LULESH"
+    )
+  endif()  
+
   set(LULESH_SOURCES
-      ${lulesh-cuda_SOURCE_DIR}/allocator.cu
-      ${lulesh-cuda_SOURCE_DIR}/lulesh.cu
-      ${lulesh-cuda_SOURCE_DIR}/lulesh-comms.cu
-      ${lulesh-cuda_SOURCE_DIR}/lulesh-comms-gpu.cu
+    ${lulesh-cuda_SOURCE_DIR}/LULESH/allocator.cu
+    ${lulesh-cuda_SOURCE_DIR}/LULESH/lulesh.cu
+    ${lulesh-cuda_SOURCE_DIR}/LULESH/lulesh-comms.cu
+    ${lulesh-cuda_SOURCE_DIR}/LULESH/lulesh-comms-gpu.cu
   )
   
   set_source_files_properties(${LULESH_SOURCES} PROPERTIES LANGUAGE CXX)
   CB_ADD_CUDA_BENCHMARK(LULESH_Benchmark ${LULESH_SOURCES})
-    target_compile_definitions(LULESH_Benchmark PRIVATE 
-      RESTRICT=1 
-      VERIFY=1 
-      Normal_forward=0
+  target_compile_definitions(LULESH_Benchmark PRIVATE 
+  VERIFY=1 
+  Normal_forward=0
   )
-
+  
   target_include_directories(LULESH_Benchmark PRIVATE ${lulesh-cuda_SOURCE_DIR}) 
 endif()
 
