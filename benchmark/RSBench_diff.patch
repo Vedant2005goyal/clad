@@ -1,0 +1,165 @@
+diff --git a/RSBench/rsbench.cuh b/RSBench/rsbench.cuh
+index 8d2eeab..b7dc971 100644
+--- a/RSBench/rsbench.cuh
++++ b/RSBench/rsbench.cuh
+@@ -9,8 +9,18 @@
+ #include<assert.h>
+ #include<cuda.h>
+ #include <thrust/reduce.h>
++#include <thrust/count.h>
++#include <thrust/sort.h>
++#include <thrust/partition.h>
+ #include <chrono> 
+-
++#ifdef USE_CLAD
++// Marks mutable pointer and array parameters that are not differentiation
++// targets as non-differentiable to avoid Clad's "dependent non-const pointer"
++// error without changing XSBench's function signatures.
++#define CLAD_NON_DIFF __attribute__((annotate("non_differentiable")))
++#else
++#define CLAD_NON_DIFF
++#endif
+ #define PI 3.14159265359
+ 
+ // typedefs
+@@ -49,7 +59,7 @@ typedef struct{
+ 	int particles;
+ 	int simulation_method;
+ 	int kernel_id;
+-} Input;
++}CLAD_NON_DIFF Input;
+ 
+ typedef struct{
+ 	RSComplex MP_EA;
+@@ -130,15 +140,15 @@ double get_time(void);
+ void run_event_based_simulation(Input input, SimulationData data, SimulationData SD, unsigned long * vhash_result );
+ void run_event_based_simulation_optimization_1(Input in, SimulationData GSD, unsigned long * vhash_result);
+ __global__ void xs_lookup_kernel_baseline(Input in, SimulationData GSD );
+-__device__ void calculate_macro_xs( double * macro_xs, int mat, double E, Input input, int * num_nucs, int * mats, int max_num_nucs, double * concs, int * n_windows, double * pseudo_K0Rs, Window * windows, Pole * poles, int max_num_windows, int max_num_poles );
+-__device__ void calculate_micro_xs( double * micro_xs, int nuc, double E, Input input, int * n_windows, double * pseudo_K0RS, Window * windows, Pole * poles, int max_num_windows, int max_num_poles);
+-__device__ void calculate_micro_xs_doppler( double * micro_xs, int nuc, double E, Input input, int * n_windows, double * pseudo_K0RS, Window * windows, Pole * poles, int max_num_windows, int max_num_poles );
++__device__ void calculate_macro_xs( double * macro_xs, int mat, double E, Input input, const int * num_nucs, const int * mats, int max_num_nucs, const double * concs, const int * n_windows, const double * pseudo_K0Rs, const Window * windows, Pole * poles, int max_num_windows, int max_num_poles );
++__device__ void calculate_micro_xs( double * micro_xs, int nuc, double E, Input input, const int * n_windows, const double * pseudo_K0RS, const Window * windows, Pole * poles, int max_num_windows, int max_num_poles);
++__device__ void calculate_micro_xs_doppler( double * micro_xs, int nuc, double E, Input input, const int * n_windows, const double * pseudo_K0RS, const Window * windows, Pole * poles, int max_num_windows, int max_num_poles );
+ __device__ int pick_mat( uint64_t * seed );
+-__device__ void calculate_sig_T( int nuc, double E, Input input, double * pseudo_K0RS, RSComplex * sigTfactors );
++CLAD_NON_DIFF __device__ void calculate_sig_T( int nuc, double E, Input input, const double * pseudo_K0RS, RSComplex * sigTfactors );
+ __device__ RSComplex fast_nuclear_W( RSComplex Z );
+-__host__ __device__ double LCG_random_double(uint64_t * seed);
+-__host__ __device__ uint64_t LCG_random_int(uint64_t * seed);
+-__device__ uint64_t fast_forward_LCG(uint64_t seed, uint64_t n);
++CLAD_NON_DIFF __host__ __device__ double LCG_random_double(uint64_t * seed);
++CLAD_NON_DIFF __host__ __device__ uint64_t LCG_random_int(uint64_t * seed);
++CLAD_NON_DIFF __device__ uint64_t fast_forward_LCG(uint64_t seed, uint64_t n);
+ __device__ RSComplex c_add( RSComplex A, RSComplex B);
+ __device__ RSComplex c_sub( RSComplex A, RSComplex B);
+ __host__ __device__ RSComplex c_mul( RSComplex A, RSComplex B);
+diff --git a/RSBench/simulation.cu b/RSBench/simulation.cu
+index 9420608..5d27dc8 100644
+--- a/RSBench/simulation.cu
++++ b/RSBench/simulation.cu
+@@ -1,4 +1,7 @@
+ #include "rsbench.cuh"
++#ifdef USE_CLAD
++#include "clad/Differentiator/Differentiator.h"
++#endif
+ 
+ ////////////////////////////////////////////////////////////////////////////////////
+ // BASELINE FUNCTIONS
+@@ -11,12 +14,13 @@
+ // must be specifically selected using the "-k <optimized variant ID>" command
+ // line argument.
+ ////////////////////////////////////////////////////////////////////////////////////
+-
++#ifndef USE_CLAD
+ template<typename... Args>
+ __device__ 
+ void __enzyme_autodiff(void*, Args...);
+ 
+ __device__ int enzyme_dup, enzyme_const, enzyme_active;
++#endif
+ 
+ void run_event_based_simulation(Input input, SimulationData GSD, SimulationData SD, unsigned long * vhash_result )
+ {
+@@ -57,7 +61,7 @@ void run_event_based_simulation(Input input, SimulationData GSD, SimulationData
+ 
+ 	#else
+ 
+-	size_t sz = 10;//GSD.length_poles;
++	constexpr size_t sz = 10;//GSD.length_poles;
+     Pole here[sz];// = 1.23456;
+     gpuErrchk( cudaMemcpy(&here, GSD.d_poles, sz * sizeof(Pole), cudaMemcpyDeviceToHost) );
+ 
+@@ -105,7 +109,7 @@ __global__ void xs_lookup_kernel_baseline(Input in, SimulationData GSD )
+ 
+ 	double d_macro_xs[4] = {0};
+ 	d_macro_xs[0] = 1.0;
+-
++#ifndef USE_CLAD
+ 	__enzyme_autodiff((void*)calculate_macro_xs,
+ 				enzyme_dup,   macro_xs, d_macro_xs,
+ 				enzyme_const, mat,
+@@ -123,6 +127,13 @@ __global__ void xs_lookup_kernel_baseline(Input in, SimulationData GSD )
+ 				enzyme_const, GSD.max_num_windows, 
+ 				enzyme_const, GSD.max_num_poles
+ 			);
++#else
++  auto grad = clad::gradient(calculate_macro_xs, "macro_xs, poles");
++  grad.execute(macro_xs, mat, E, in, GSD.num_nucs, GSD.mats, GSD.max_num_nucs,
++               GSD.concs, GSD.n_windows, GSD.pseudo_K0RS, GSD.windows,
++               GSD.poles, GSD.max_num_windows, GSD.max_num_poles, d_macro_xs,
++               GSD.d_poles);
++#endif
+     #endif
+ 
+ 	// For verification, and to prevent the compiler from optimizing
+@@ -159,7 +170,7 @@ __device__ void body( int i, double * __restrict__ macro_xs, int mat, double E,
+ 	}	
+ }
+ 
+-__device__ void calculate_macro_xs( double * __restrict__ macro_xs, int mat, double E, Input input, int * __restrict__ num_nucs, int * __restrict__ mats, int max_num_nucs, double * __restrict__ concs, int * __restrict__ n_windows, double * __restrict__ pseudo_K0Rs, Window * __restrict__ windows, Pole * __restrict__ poles, int max_num_windows, int max_num_poles ) 
++__device__ void calculate_macro_xs( double * __restrict__ macro_xs, int mat, double E, Input input,  const int * __restrict__ num_nucs, const int * __restrict__ mats, int max_num_nucs,  const double * __restrict__ concs, const int * __restrict__ n_windows, const double * __restrict__ pseudo_K0Rs, const Window * __restrict__ windows, Pole * __restrict__ poles, int max_num_windows, int max_num_poles )
+ {
+ 	// zero out macro vector
+ 	for( int i = 0; i < 4; i++ )
+@@ -205,7 +216,7 @@ __device__ void calculate_macro_xs( double * __restrict__ macro_xs, int mat, dou
+ #ifdef ALWAYS_INLINE
+ __attribute__((always_inline))
+ #endif
+-__device__ void calculate_micro_xs( double * micro_xs, int nuc, double E, Input input, int * n_windows, double * pseudo_K0RS, Window * windows, Pole * poles, int max_num_windows, int max_num_poles)
++__device__ void calculate_micro_xs( double * micro_xs, int nuc, double E, Input input, const int * n_windows, const double * pseudo_K0RS, const Window * windows, Pole * poles, int max_num_windows, int max_num_poles)
+ {
+ 	// MicroScopic XS's to Calculate
+ 	double sigT;
+@@ -260,7 +271,7 @@ __device__ void calculate_micro_xs( double * micro_xs, int nuc, double E, Input
+ #ifdef ALWAYS_INLINE
+ __attribute__((always_inline))
+ #endif
+-__device__ void calculate_micro_xs_doppler( double * micro_xs, int nuc, double E, Input input, int * n_windows, double * pseudo_K0RS, Window * windows, Pole * poles, int max_num_windows, int max_num_poles )
++__device__ void calculate_micro_xs_doppler( double * micro_xs, int nuc, double E, Input input, const int * n_windows, const double * pseudo_K0RS, const Window * windows, Pole * poles, int max_num_windows, int max_num_poles )
+ {
+ 	// MicroScopic XS's to Calculate
+ 	double sigT;
+@@ -352,11 +363,11 @@ __device__ int pick_mat( uint64_t * seed )
+ 	return 0;
+ }
+ 
+-__device__ void calculate_sig_T( int nuc, double E, Input input, double * pseudo_K0RS, RSComplex * sigTfactors )
++__device__ void calculate_sig_T( int nuc, double E, Input input, const double * pseudo_K0RS, RSComplex * sigTfactors )
+ {
+ 	double phi;
+ 
+-	#pragma unroll
++	// #pragma unroll
+ 	for( int i = 0; i < 4; i++ )
+ 	{
+ 		phi = pseudo_K0RS[nuc * input.numL + i] * sqrt(E);
+@@ -431,7 +442,7 @@ __device__ RSComplex fast_nuclear_W( RSComplex Z )
+ 		RSComplex one = {1, 0};
+ 		RSComplex W = c_div(c_mul(i, ( c_sub(one, fast_cexp(c_mul(t1, Z))) )) , c_mul(t2, Z));
+ 		RSComplex sum = {0,0};
+-		#pragma unroll
++		// #pragma unroll
+ 		for( int n = 0; n < 10; n++ )
+ 		{
+ 			RSComplex t3 = {neg_1n[n], 0};
