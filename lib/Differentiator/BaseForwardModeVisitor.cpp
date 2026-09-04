@@ -991,30 +991,31 @@ Expr* BaseForwardModeVisitor::GuardNullTangentRead(const Expr* ptr,
       m_Sema.ActOnConditionalOp(noLoc, noLoc, cond, read, zero).get());
 }
 
-Expr* BaseForwardModeVisitor::UnwrapNullTangentRead(Expr* tangent) {
+Expr* BaseForwardModeVisitor::BuildGuardedTangentAddress(Expr* tangent) {
   // A read through a tangent that may be null comes back from
   // GuardNullTangentRead as `(_d_p ? _d_p[i] : 0.)`, whose value category is
-  // prvalue even though the read it guards is an lvalue. Taking its address is
-  // then ill-formed, and the caller loses the tangent entirely. Rebuild the
+  // prvalue even though the read it guards is an lvalue. `&` on it is
+  // ill-formed, and the caller then loses the tangent entirely. Build the
   // guard around the address instead: `&_d_p[i]` is exactly as null-safe as
   // the read was, and the null branch becomes a null pointer rather than a
-  // zero value, which is what a callee taking a tangent pointer already
-  // expects.
+  // zero value, which is what a callee taking a tangent pointer expects.
+  // Returns null when \p tangent is not such a guarded read, leaving the
+  // caller to take the address itself.
   auto* CO = dyn_cast<ConditionalOperator>(tangent->IgnoreParens());
   if (!CO || CO->isLValue())
-    return tangent;
+    return nullptr;
   Expr* read = CO->getTrueExpr()->IgnoreImpCasts();
   if (!read->isLValue())
-    return tangent;
+    return nullptr;
   Expr* addr = BuildOp(UnaryOperatorKind::UO_AddrOf, read);
   if (!addr)
-    return tangent;
+    return nullptr;
   // The guarded read is discarded here, so its condition can be moved into the
   // replacement rather than cloned.
   Expr* null = getZeroInit(addr->getType());
   Expr* guarded =
       m_Sema.ActOnConditionalOp(noLoc, noLoc, CO->getCond(), addr, null).get();
-  return guarded ? BuildParens(guarded) : tangent;
+  return guarded ? BuildParens(guarded) : nullptr;
 }
 
 Expr* BaseForwardModeVisitor::KeepTangentNullness(const Expr* ptr,
@@ -1522,9 +1523,15 @@ StmtDiff BaseForwardModeVisitor::VisitUnaryOperator(const UnaryOperator* UnOp) {
     // A subexpression without a tangent of its own (e.g. an object that does
     // not depend on the differentiation variable) yields a synthesized zero
     // init, which is an rvalue and has no address.
-    if (derivedOp && !derivedOp->getType()->isVoidType())
-      derivedOp = BuildOp(opKind, UnwrapNullTangentRead(derivedOp));
-    else
+    if (derivedOp && !derivedOp->getType()->isVoidType()) {
+      // A null-guarded read has no address of its own; the guarded address is
+      // what the caller wants, so let the helper build it rather than taking
+      // `&` of the guard.
+      if (Expr* guardedAddr = BuildGuardedTangentAddress(derivedOp))
+        derivedOp = guardedAddr;
+      else
+        derivedOp = BuildOp(opKind, derivedOp);
+    } else
       derivedOp = nullptr;
     return StmtDiff(op, derivedOp);
   } else if (opKind == UnaryOperatorKind::UO_LNot) {

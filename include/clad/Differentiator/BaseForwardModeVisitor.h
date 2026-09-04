@@ -92,10 +92,10 @@ public:
   /// arithmetic makes a reader sail past the check and dereference a small
   /// integer. Callers apply this wherever a derived tangent outlives the
   /// expression that built it.
-  /// Turns a null-guarded tangent read into a null-guarded tangent address,
-  /// so that `&` applied to it stays well-formed. Returns \p tangent
-  /// unchanged when it is not such a read.
-  clang::Expr* UnwrapNullTangentRead(clang::Expr* tangent);
+  /// Builds the null-guarded address of a null-guarded tangent read, so that
+  /// `&` applied to such a read stays well-formed. Returns null when \p
+  /// tangent is not such a read.
+  clang::Expr* BuildGuardedTangentAddress(clang::Expr* tangent);
 
   clang::Expr* KeepTangentNullness(const clang::Expr* ptr,
                                    clang::Expr* tangent);
