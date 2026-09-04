@@ -439,6 +439,16 @@ Stmt* StmtClone::VisitUnaryExprOrTypeTraitExpr(UnaryExprOrTypeTraitExpr* Node) {
       CloneType(Node->getType()), Node->getOperatorLoc(), Node->getRParenLoc());
 }
 
+Stmt* StmtClone::VisitTypeTraitExpr(TypeTraitExpr* Node) {
+  llvm::SmallVector<TypeSourceInfo*, 4> Args;
+  for (unsigned I = 0, N = Node->getNumArgs(); I != N; ++I)
+    Args.push_back(Node->getArg(I));
+  return TypeTraitExpr::Create(
+      Ctx, CloneType(Node->getType()), Node->getBeginLoc(), Node->getTrait(),
+      Args, Node->getEndLoc(),
+      Node->isValueDependent() ? false : Node->getValue());
+}
+
 Stmt* StmtClone::VisitCallExpr(CallExpr* Node) {
   llvm::SmallVector<Expr*, 4> clonedArgs;
   for (Expr* arg : Node->arguments())
@@ -586,7 +596,18 @@ DEFINE_CLONE_STMT(CXXCatchStmt, (Node->getCatchLoc(),
                                  CloneDeclOrNull(Node->getExceptionDecl()),
                                  Clone(Node->getHandlerBlock())))
 
-DEFINE_CLONE_STMT(ValueStmt, (Node->getStmtClass()))
+// Catch-all for every Expr class with no case of its own: clang's StmtVisitor
+// walks CXXNewExpr -> Expr -> ValueStmt -> Stmt, so this is what an
+// unsupported expression lands on. Constructing a bare ValueStmt here produced
+// a node that reported the original's StmtClass while carrying neither its
+// type nor its operands -- corruption that reads as a successful clone.
+// Callers saw, for instance, a `new T[n]` whose type was null, and quietly
+// dropped the statement built from it. Report the failure the way VisitStmt
+// does and leave it to the caller to notice.
+Stmt* StmtClone::VisitValueStmt(ValueStmt*) {
+  assert(0 && "clone not fully implemented");
+  return nullptr;
+}
 
 Stmt* StmtClone::VisitCXXTryStmt(CXXTryStmt* Node) {
   llvm::SmallVector<Stmt*, 4> CatchStmts(std::max(1u, Node->getNumHandlers()));
@@ -718,7 +739,8 @@ bool ReferencesUpdater::VisitDeclRefExpr(DeclRefExpr* DRE) {
 
 bool ReferencesUpdater::VisitStmt(clang::Stmt* S) {
   if (auto* E = dyn_cast<Expr>(S))
-    updateType(E->getType());
+    if (!E->getType().isNull())
+      updateType(E->getType());
   return true;
 }
 

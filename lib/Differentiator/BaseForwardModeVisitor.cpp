@@ -991,6 +991,32 @@ Expr* BaseForwardModeVisitor::GuardNullTangentRead(const Expr* ptr,
       m_Sema.ActOnConditionalOp(noLoc, noLoc, cond, read, zero).get());
 }
 
+Expr* BaseForwardModeVisitor::UnwrapNullTangentRead(Expr* tangent) {
+  // A read through a tangent that may be null comes back from
+  // GuardNullTangentRead as `(_d_p ? _d_p[i] : 0.)`, whose value category is
+  // prvalue even though the read it guards is an lvalue. Taking its address is
+  // then ill-formed, and the caller loses the tangent entirely. Rebuild the
+  // guard around the address instead: `&_d_p[i]` is exactly as null-safe as
+  // the read was, and the null branch becomes a null pointer rather than a
+  // zero value, which is what a callee taking a tangent pointer already
+  // expects.
+  auto* CO = dyn_cast<ConditionalOperator>(tangent->IgnoreParens());
+  if (!CO || CO->isLValue())
+    return tangent;
+  Expr* read = CO->getTrueExpr()->IgnoreImpCasts();
+  if (!read->isLValue())
+    return tangent;
+  Expr* addr = BuildOp(UnaryOperatorKind::UO_AddrOf, read);
+  if (!addr)
+    return tangent;
+  // The guarded read is discarded here, so its condition can be moved into the
+  // replacement rather than cloned.
+  Expr* null = getZeroInit(addr->getType());
+  Expr* guarded =
+      m_Sema.ActOnConditionalOp(noLoc, noLoc, CO->getCond(), addr, null).get();
+  return guarded ? BuildParens(guarded) : tangent;
+}
+
 Expr* BaseForwardModeVisitor::KeepTangentNullness(const Expr* ptr,
                                                   Expr* tangent) {
   if (!tangent || !tangent->getType()->isPointerType())
@@ -1497,7 +1523,7 @@ StmtDiff BaseForwardModeVisitor::VisitUnaryOperator(const UnaryOperator* UnOp) {
     // not depend on the differentiation variable) yields a synthesized zero
     // init, which is an rvalue and has no address.
     if (derivedOp && !derivedOp->getType()->isVoidType())
-      derivedOp = BuildOp(opKind, derivedOp);
+      derivedOp = BuildOp(opKind, UnwrapNullTangentRead(derivedOp));
     else
       derivedOp = nullptr;
     return StmtDiff(op, derivedOp);

@@ -628,6 +628,37 @@ void shrink_to_fit_reverse_forw(::std::vector<T>* v,
   v->shrink_to_fit();
 }
 
+// resize() changes the element count, so the adjoint vector has to follow it
+// to keep the index correspondence with the primal. Without these clad
+// differentiates the standard library implementation of resize(), which
+// reaches into _M_erase_at_end / _M_realloc_insert and the allocator guard
+// types (_Guard, _Guard_elts, _Vector_impl); those have private constructors
+// and deleted copy-assignment, so the generated derivative does not compile.
+//
+// The count is integral and appended elements are value-initialized, so no
+// adjoint flows through either argument. The reverse sweep still has to undo
+// the size change; it reads the size back off the primal, which the reverse
+// sweep has already rolled back by the time the pullback runs, so no
+// per-call state has to be carried across the two sweeps.
+template <typename T>
+void resize_reverse_forw(::std::vector<T>* v,
+                         typename ::std::vector<T>::size_type sz,
+                         ::std::vector<T>* d_v,
+                         typename ::std::vector<T>::size_type /*d_sz*/) {
+  v->resize(sz);
+  d_v->resize(sz, T());
+}
+
+template <typename T>
+void resize_pullback(::std::vector<T>* v,
+                     typename ::std::vector<T>::size_type /*sz*/,
+                     ::std::vector<T>* d_v,
+                     typename ::std::vector<T>::size_type* /*d_sz*/) {
+  // The reverse sweep walks back past the resize, so the adjoint returns to
+  // the size the primal has once it too has been rolled back.
+  d_v->resize(v->size(), T());
+}
+
 // The element count does not depend on the element values, so these mirror
 // size_pushforward/capacity_pushforward, which report a zero derivative.
 // Without them clad differentiates the standard library implementation of

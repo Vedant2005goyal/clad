@@ -132,6 +132,7 @@ namespace utils {
     DECLARE_CLONE_FN(ConstantExpr)
     DECLARE_CLONE_FN(ValueStmt)
     DECLARE_CLONE_FN(LambdaExpr)
+    DECLARE_CLONE_FN(TypeTraitExpr)
 
     clang::Stmt* VisitStmt(clang::Stmt*);
   };

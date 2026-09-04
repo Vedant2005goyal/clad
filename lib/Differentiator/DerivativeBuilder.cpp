@@ -46,6 +46,7 @@
 #include "clang/Sema/Lookup.h"
 #include "clang/Sema/Overload.h"
 #include "clang/Sema/Scope.h"
+#include "clang/Sema/EnterExpressionEvaluationContext.h"
 #include "clang/Sema/Sema.h"
 #include "clang/Sema/SemaInternal.h"
 #include "clang/Sema/Template.h"
@@ -618,6 +619,20 @@ static void registerDerivative(Decl* D, Sema& S, const DiffRequest& R) {
                   .get();
           Inits.push_back(dummy);
         }
+        // This call exists only to let overload resolution pick the right
+        // custom derivative; the CallExpr itself is discarded and only its
+        // callee is kept. Building it in an evaluated context would ODR-use
+        // that specialization and instantiate its body, even for a call clad
+        // goes on to classify as non-differentiable and never emits. A
+        // template body that is ill-formed for the deduced arguments then
+        // becomes a hard error attributed to the clad-generated
+        // translation unit -- e.g. STLBuiltins' subscript pullback doing
+        // `(*d_vec)[idx] += d_y` for a std::vector whose element type has no
+        // `operator+=`. An unevaluated context resolves the overload without
+        // the ODR-use; a derivative clad really does emit is ODR-used by the
+        // emitted call itself.
+        clang::EnterExpressionEvaluationContext Unevaluated(
+            m_Sema, clang::Sema::ExpressionEvaluationContext::Unevaluated);
         Expr* CE = m_Sema
                        .ActOnCallExpr(m_Sema.TUScope, request.CustomDerivative,
                                       {}, Inits, {})

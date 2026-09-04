@@ -828,7 +828,14 @@ Expr* ReverseModeVisitor::getStdInitListSizeExpr(const Expr* E) {
   StmtDiff ReverseModeVisitor::VisitStmt(const Stmt* S) {
     diagUnsupported(S);
     // Unknown stmt, just clone it.
-    return StmtDiff(Clone(S));
+    // For expression kinds that StmtClone does not handle (e.g.
+    // TypeTraitExpr), Clone()/updateReferencesOf() may produce a node
+    // with a corrupted type.  Fall back to a shallow CloneNode which
+    // copies just the AST node without running ReferencesUpdater.
+    Stmt* cloned = CloneNode(S);
+    if (!cloned)
+      cloned = const_cast<Stmt*>(S);
+    return StmtDiff(cloned);
   }
 
   StmtDiff
@@ -889,9 +896,21 @@ Expr* ReverseModeVisitor::getStdInitListSizeExpr(const Expr* E) {
     // this ensures we can differentiate conditions that affect the derivatives
     // as well as declarations inside the condition:
     beginBlock(direction::reverse);
-    if (const auto* condDeclStmt = If->getConditionVariableDeclStmt())
+    const auto* condDeclStmt = If->getConditionVariableDeclStmt();
+    if (condDeclStmt)
       condDiff = Visit(condDeclStmt);
     else
+      condDiff = Visit(If->getCond());
+    // VisitDeclStmt turns a condition-variable declaration into an
+    // assignment expression (usable directly below) only when it promotes
+    // the decl to function scope; reverse_mode_forward_pass never promotes
+    // (see VisitDeclStmt's own comment on that), so there condDiff still
+    // wraps the literal DeclStmt. getCond() is independently populated by
+    // Sema in both cases (e.g. with a DeclRefExpr to the condition
+    // variable), so fall back to it whenever what we have isn't already an
+    // expression -- the decl itself was already differentiated/emitted by
+    // the Visit(condDeclStmt) call above.
+    if (condDeclStmt && !isa<Expr>(condDiff.getStmt()))
       condDiff = Visit(If->getCond());
     CompoundStmt* RCS = endBlock(direction::reverse);
     if (!RCS->body_empty()) {
@@ -935,6 +954,17 @@ Expr* ReverseModeVisitor::getStdInitListSizeExpr(const Expr* E) {
             ->ActBeforeFinalizingVisitBranchSingleStmtInIfVisitStmt();
 
       Stmt* Forward = utils::unwrapIfSingleStmt(endBlock(direction::forward));
+      // A branch can differentiate to nothing at all -- `delete[] p;` carries
+      // no derivative, and the forward pass of a reverse-mode call drops it --
+      // and an empty block unwraps to null. A branch the source really has
+      // must not be left null: an IfStmt whose `then` is null is not a
+      // well-formed AST, and clang walks straight into it, crashing in CodeGen
+      // and again when printing the generated function. Stand an empty
+      // compound statement in for the branch that vanished. Only a braceless
+      // branch can reach this; a braced one comes back from VisitCompoundStmt
+      // as a CompoundStmt of its own, empty or not.
+      if (!Forward)
+        Forward = MakeCompoundStmt({});
       Stmt* Reverse = utils::unwrapIfSingleStmt(BranchDiff.getStmt_dx());
       return StmtDiff(Forward, Reverse);
     };
@@ -1902,6 +1932,23 @@ Expr* ReverseModeVisitor::getStdInitListSizeExpr(const Expr* E) {
                  isCUDAKernel))
         result.updateStmtDx(
             BuildOp(UO_AddrOf, adjointArg, m_DiffReq->getLocation()));
+      else if (adjointArg->getType()->isPointerType() &&
+               adjointArg->getType()->getPointeeType().isConstQualified()) {
+        // The pullback writes the adjoint through this pointer, so its
+        // parameter is `T*` even where the primal parameter is `const T*`.
+        // The adjoint expression can still come back pointer-to-const when a
+        // const-qualified accessor produced it (e.g. ADBench's LightMatrix
+        // declares `const T* get_col(int) const`, and the adjoint of that
+        // call inherits its return type). The storage behind an adjoint is
+        // clad's own and always mutable, so drop the qualifier instead of
+        // letting the pullback call fail to compile.
+        QualType nonConstPtrTy =
+            utils::getNonConstType(adjointArg->getType(), m_Sema);
+        TypeSourceInfo* TSI = m_Context.getTrivialTypeSourceInfo(nonConstPtrTy);
+        if (Expr* casted =
+                m_Sema.BuildCStyleCastExpr(noLoc, TSI, noLoc, adjointArg).get())
+          result.updateStmtDx(casted);
+      }
     }
 
     // If a function returns an object by value, there
@@ -2247,6 +2294,10 @@ Expr* ReverseModeVisitor::getStdInitListSizeExpr(const Expr* E) {
     // The set of arguments to be used in a ``reverse_forw`` after the original
     // args.
     llvm::SmallVector<Expr*, 16> revForwAdjointArgs{};
+    // Whether the implicit object's adjoint occupies the leading slot of
+    // revForwAdjointArgs. The base only pushes one when it actually has an
+    // adjoint, so the slot can be absent for an instance call.
+    bool hasBaseAdjointArg = false;
 
     /// Add base derivative expression in the derived call output args list if
     /// `CE` is a call to an instance member function.
@@ -2307,8 +2358,33 @@ Expr* ReverseModeVisitor::getStdInitListSizeExpr(const Expr* E) {
             dBaseTy = dBaseTy->getPointeeType();
           dBaseTy =
               utils::getNonConstType(dBaseTy.getNonReferenceType(), m_Sema);
-          VarDecl* dBaseDecl =
-              BuildVarDecl(dBaseTy, "_r", getZeroInit(dBaseTy));
+          // A zero-initialized placeholder is only safe for the pullback to
+          // write into when the adjoint slots it touches already exist. For a
+          // container that does not hold: `std::vector<int> _r = {}` is
+          // *empty*, so the subscript pullback's `(*d_vec)[idx] += d_y` runs
+          // off the end and the generated gradient crashes. Copy-initializing
+          // from the primal gives the placeholder the primal's shape, putting
+          // every index the pullback touches in range. Its accumulated values
+          // are discarded either way, so seeding them from the primal is
+          // harmless -- only the shape matters.
+          // Only for a type that carries dynamic extent, which
+          // trivially-copyable rules out: a plain aggregate zero-inits to the
+          // right shape already, so copying it would be pointless work and
+          // would seed the placeholder with the primal's values for no gain.
+          // And only when the base is already an lvalue object the primal
+          // itself reads -- a pointer base is not safe to dereference here, as
+          // it may be an address baked into the source that the call never
+          // loads from (issue #1960), where copying through it would fault.
+          Expr* placeholderInit = nullptr;
+          if (baseExpr && baseExpr->isLValue() &&
+              !baseExpr->getType()->isPointerType() &&
+              !dBaseTy.isTriviallyCopyableType(m_Context))
+            if (const CXXRecordDecl* CRD = dBaseTy->getAsCXXRecordDecl())
+              if (CRD->hasDefinition() && utils::isCopyable(CRD))
+                placeholderInit = CloneNode(baseExpr);
+          if (!placeholderInit)
+            placeholderInit = getZeroInit(dBaseTy);
+          VarDecl* dBaseDecl = BuildVarDecl(dBaseTy, "_r", placeholderInit);
           PreCallStmts.push_back(BuildDeclStmt(dBaseDecl));
           baseDerivative = BuildDeclRef(dBaseDecl);
         }
@@ -2316,6 +2392,7 @@ Expr* ReverseModeVisitor::getStdInitListSizeExpr(const Expr* E) {
           if (!baseDerivative->getType()->isPointerType())
             baseDerivative = BuildOp(UO_AddrOf, baseDerivative);
           CallArgDx.push_back(baseDerivative);
+          hasBaseAdjointArg = true;
           // revForwAdjointArgs feeds the reverse-forward call while CallArgDx
           // feeds the pullback; clone so the same `&_d_base` is not parented by
           // both calls.
@@ -2505,6 +2582,12 @@ Expr* ReverseModeVisitor::getStdInitListSizeExpr(const Expr* E) {
       it = block.insert(it, OverloadedDerivedFn);
       it++;
     }
+    // Anything emitted below belongs after the statements just placed here:
+    // PreCallStmts declares the `_r` temporaries (including the placeholder
+    // adjoint for a base that has none), and an adjoint increment inserted
+    // back at insertionPoint would read them before their declaration runs.
+    std::size_t afterPreCallStmts =
+        insertionPoint + PreCallStmts.size() + (OverloadedDerivedFn ? 1 : 0);
 
     if (isa<CUDAKernelCallExpr>(CE) || (MD && isLambdaCallOperator(MD)))
       return StmtDiff(Clone(CE));
@@ -2520,22 +2603,40 @@ Expr* ReverseModeVisitor::getStdInitListSizeExpr(const Expr* E) {
         call = CallArgs[0];
       }
 
-      if (MD && MD->isInstance()) {
-        revForwAdjointArgs[0] = BuildOp(UO_Deref, revForwAdjointArgs[0]);
-        if (isa<UnaryOperator>(revForwAdjointArgs[0]))
-          revForwAdjointArgs[0] =
-              utils::BuildParenExpr(m_Sema, revForwAdjointArgs[0]);
-      }
+      // An elided reverse_forw propagates the adjoint by replaying the primal
+      // on the adjoint arguments, so it needs the object's adjoint in the
+      // leading slot. An instance call whose object has no adjoint -- e.g.
+      // `vec[i]` on a const container reached through a pointer clad does not
+      // differentiate -- never pushed that slot, so revForwAdjointArgs starts
+      // at the first real argument instead. Dereferencing it would take `*i`
+      // on the index and then build the adjoint call with a shifted argument
+      // list. There is no adjoint to propagate in that case, so leave call_dx
+      // null and let the primal call stand alone.
+      bool canReplayOnAdjoints =
+          !(MD && MD->isInstance() && !hasBaseAdjointArg);
       Expr* call_dx = nullptr;
-      if (!isCastSem)
-        call_dx =
-            BuildCallExprToFunction(FD, revForwAdjointArgs, CUDAExecConfig);
-      else
-        call_dx = revForwAdjointArgs[0];
+      if (canReplayOnAdjoints) {
+        if (MD && MD->isInstance()) {
+          if (Expr* derefBase = BuildOp(UO_Deref, revForwAdjointArgs[0])) {
+            revForwAdjointArgs[0] = derefBase;
+            if (isa<UnaryOperator>(revForwAdjointArgs[0]))
+              revForwAdjointArgs[0] =
+                  utils::BuildParenExpr(m_Sema, revForwAdjointArgs[0]);
+          } else
+            canReplayOnAdjoints = false;
+        }
+      }
+      if (canReplayOnAdjoints) {
+        if (!isCastSem)
+          call_dx =
+              BuildCallExprToFunction(FD, revForwAdjointArgs, CUDAExecConfig);
+        else
+          call_dx = revForwAdjointArgs[0];
+      }
 
       if (Expr* add_assign = BuildDiffIncrement(call_dx)) {
         Stmts& block = getCurrentBlock(direction::reverse);
-        it = std::begin(block) + insertionPoint;
+        it = std::begin(block) + afterPreCallStmts;
         block.insert(it, add_assign);
       }
       if (FD->getNameAsString() == "cudaMalloc") {
@@ -2592,8 +2693,19 @@ Expr* ReverseModeVisitor::getStdInitListSizeExpr(const Expr* E) {
     // primal does the same work without them. This is the forward sweep of a
     // reverse_forw, so there is no reverse sweep here to consume anything else
     // the reverse_forw would produce.
-    bool recordsAreDead =
-        usingRestoreTracker && m_RestoreTracker && mutatesOnlyOwnLocals;
+    // A non-const instance method also writes through its implicit object,
+    // which the parameter loop above never sees -- `m.resize(n)` mutates `m`
+    // the way `resize(&m, n)` would mutate an out-parameter. Where that object
+    // lives decides the same question: reached through one of this function's
+    // own parameters (`auto& m = *pm;`), it outlives the frame, so the
+    // reverse_forw's effect on its adjoint is the caller's to see.
+    bool mutatesCallerVisibleObject =
+        MD && MD->isInstance() && !MD->isConst() && baseOriginalE &&
+        !utils::designatesLocallyOwnedStorage(
+            baseOriginalE,
+            /*asPointerValue=*/baseOriginalE->getType()->isPointerType());
+    bool recordsAreDead = usingRestoreTracker && m_RestoreTracker &&
+                          mutatesOnlyOwnLocals && !mutatesCallerVisibleObject;
 
     // A reverse_forw that carries pullback_state is mandatory even when clad
     // could otherwise call the primal directly: the pullback consumes state
@@ -3443,8 +3555,11 @@ Expr* ReverseModeVisitor::getStdInitListSizeExpr(const Expr* E) {
         Expr* derivedR = nullptr;
         ComputeEffectiveDOperands(Ldiff, Rdiff, derivedL, derivedR);
         // derivedR is the scalar offset, already used by the forward op above;
-        // clone so the derivative op does not share it.
-        derivedR = CloneNode(derivedR);
+        // clone so the derivative op does not share it. Keep the original when
+        // StmtClone has no case for the node and hands back null -- see the
+        // assignment branch below, where that silently dropped an allocation.
+        if (Expr* clonedR = CloneNode(derivedR))
+          derivedR = clonedR;
         if (opCode == BO_Sub)
           derivedR = BuildParens(derivedR);
         return StmtDiff(op, BuildOp(opCode, derivedL, derivedR),
@@ -3455,8 +3570,15 @@ Expr* ReverseModeVisitor::getStdInitListSizeExpr(const Expr* E) {
         Expr* derivedL = nullptr;
         Expr* derivedR = nullptr;
         ComputeEffectiveDOperands(Ldiff, Rdiff, derivedL, derivedR);
-        // Clone the scalar offset shared with the forward op above.
-        derivedR = CloneNode(derivedR);
+        // Clone the scalar offset shared with the forward op above -- but only
+        // if the clone succeeds. StmtClone has no case for a CXXNewExpr, and
+        // its fallback returns null once the assert is compiled out, so
+        // `_d_p = new T[n]` used to clone away to nothing: the whole adjoint
+        // assignment was dropped and _d_p stayed null for the pullback to
+        // write through. Nothing else holds that derived allocation, so
+        // keeping the original node is safe.
+        if (Expr* clonedR = CloneNode(derivedR))
+          derivedR = clonedR;
         addToCurrentBlock(BuildOp(opCode, derivedL, derivedR),
                           direction::forward);
         if (opCode == BO_Assign && derivedL && derivedR)

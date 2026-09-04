@@ -742,6 +742,10 @@ namespace clad {
                              SourceLocation OpLoc) {
     if (!L || !R)
       return nullptr;
+    // An operand whose type Sema never set cannot be handed to BuildBinOp:
+    // it dereferences the type and crashes. Bail out instead.
+    if (L->getType().isNull() || R->getType().isNull())
+      return nullptr;
     // Debug clang requires the location to be valid
     if (!OpLoc.isValid())
       OpLoc = GenLoc();
