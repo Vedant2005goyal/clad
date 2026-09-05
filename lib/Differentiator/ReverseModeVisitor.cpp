@@ -3442,9 +3442,17 @@ Expr* ReverseModeVisitor::getStdInitListSizeExpr(const Expr* E) {
         Expr* derivedL = nullptr;
         Expr* derivedR = nullptr;
         ComputeEffectiveDOperands(Ldiff, Rdiff, derivedL, derivedR);
-        // derivedR is the scalar offset, already used by the forward op above;
-        // clone so the derivative op does not share it.
-        derivedR = CloneNode(derivedR);
+        // ComputeEffectiveDOperands substitutes the primal operand on
+        // whichever side is not a pointer -- `1 + a` derives to `1 + _d_a`,
+        // and that `1` is the node the forward op above already holds. Clone
+        // the substituted side so the two expressions do not share it. The
+        // other side is a derivative built for this expression alone, and
+        // cloning it is both unnecessary and unsafe: StmtClone has no case
+        // for every expression kind that can appear there.
+        if (derivedL == Ldiff.getExpr())
+          derivedL = CloneNode(derivedL);
+        if (derivedR == Rdiff.getExpr())
+          derivedR = CloneNode(derivedR);
         if (opCode == BO_Sub)
           derivedR = BuildParens(derivedR);
         return StmtDiff(op, BuildOp(opCode, derivedL, derivedR),
@@ -3455,8 +3463,17 @@ Expr* ReverseModeVisitor::getStdInitListSizeExpr(const Expr* E) {
         Expr* derivedL = nullptr;
         Expr* derivedR = nullptr;
         ComputeEffectiveDOperands(Ldiff, Rdiff, derivedL, derivedR);
-        // Clone the scalar offset shared with the forward op above.
-        derivedR = CloneNode(derivedR);
+        // As above, clone only the primal operand shared with the forward op.
+        // `p = new T[n]` reaches here with derivedR holding the adjoint
+        // allocation this expression just built; StmtClone has no case for a
+        // CXXNewExpr, so cloning it asserted in an assertions build and,
+        // without them, produced a type-less node that BuildOp rejected --
+        // dropping the whole adjoint assignment and leaving the adjoint
+        // pointer null for the pullback to write through.
+        if (derivedL == Ldiff.getExpr())
+          derivedL = CloneNode(derivedL);
+        if (derivedR == Rdiff.getExpr())
+          derivedR = CloneNode(derivedR);
         addToCurrentBlock(BuildOp(opCode, derivedL, derivedR),
                           direction::forward);
         if (opCode == BO_Assign && derivedL && derivedR)
