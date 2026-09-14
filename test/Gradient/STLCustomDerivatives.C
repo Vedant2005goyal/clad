@@ -283,6 +283,11 @@ double fn24(double x){
    std::pair<double, double> p(x,1);
    return p.first;
 }
+
+double fn25(double x, Session const* session) {
+   const float& e = session->vec[0];
+   return x * e;
+}
 int main() {
     double d_i, d_j;
     INIT_GRADIENT(fn1);
@@ -357,6 +362,11 @@ int main() {
 
     INIT_GRADIENT(fn24);
     TEST_GRADIENT(fn24, /*numOfDerivativeArgs=*/1, 3, &d_i);  // CHECK-EXEC: {1.00}
+
+    auto d_fn25 = clad::gradient(fn25, "x");
+    d_i = 0;
+    d_fn25.execute(3, &s, &d_i);
+    printf("{%.2f}\n", d_i); // CHECK-EXEC: {4.00}
 }
 
 // CHECK: void fn1_grad(double u, double v, double *_d_u, double *_d_v) {
@@ -1169,3 +1179,7 @@ int main() {
 // CHECK-NEXT:    }
 // CHECK-NEXT:}
 
+// CHECK: void fn25_grad_0(double x, const Session *session, double *_d_x) {
+// CHECK-NEXT:     const float &e = session->vec[0];
+// CHECK-NEXT:     *_d_x += 1 * e;
+// CHECK-NEXT: }

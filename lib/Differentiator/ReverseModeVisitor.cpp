@@ -2386,6 +2386,7 @@ Expr* ReverseModeVisitor::getStdInitListSizeExpr(const Expr* E) {
     // The set of arguments to be used in a ``reverse_forw`` after the original
     // args.
     llvm::SmallVector<Expr*, 16> revForwAdjointArgs{};
+    bool hasBaseAdjoint = false;
 
     /// Add base derivative expression in the derived call output args list if
     /// `CE` is a call to an instance member function.
@@ -2459,6 +2460,7 @@ Expr* ReverseModeVisitor::getStdInitListSizeExpr(const Expr* E) {
           // feeds the pullback; clone so the same `&_d_base` is not parented by
           // both calls.
           revForwAdjointArgs.push_back(CloneNode(baseDerivative));
+          hasBaseAdjoint = true;
         }
       }
     }
@@ -2659,6 +2661,8 @@ Expr* ReverseModeVisitor::getStdInitListSizeExpr(const Expr* E) {
         call = CallArgs[0];
       }
 
+      if (MD && MD->isInstance() && !hasBaseAdjoint)
+        return {call, nullptr};
       if (MD && MD->isInstance()) {
         revForwAdjointArgs[0] = BuildOp(UO_Deref, revForwAdjointArgs[0]);
         if (isa<UnaryOperator>(revForwAdjointArgs[0]))
